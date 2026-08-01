@@ -2,13 +2,17 @@
 // @name         TSH自动刷课
 // @version      1.1.2
 // @namespace    wasd258-jpg.tsh-autobrush
-// @description  清华社英语在线自动刷课：全自动答题+翻页跨单元+AI优先+查成绩+刷时长+失效自动上报。适配单选/多选/判断/下拉/填空/拖拽/跟读/口语/角色扮演/视频。
+// @description  清华社英语在线视听说自动刷课（TSH自动刷课）: 全自动答题+翻页跨单元+AI优先出答案+查成绩+刷学习时长+站点改版失效自动上报。适配单选/多选/判断/下拉/填空/拖拽/跟读/口语/角色扮演/视频。
 // @author       WASD258-jpg
 // @match        *://www.tsinghuaelt.com/*
 // @run-at       document-idle
 // @grant        none
 // @license      GPL-3.0
 // @icon         https://www.tsinghuaelt.com/favicon.ico
+// @homepageURL  https://github.com/WASD258-jpg/tsh-auto-brush
+// @supportURL   https://github.com/WASD258-jpg/tsh-auto-brush/issues
+// @updateURL    https://github.com/WASD258-jpg/tsh-auto-brush/raw/main/tsh-auto-brush.user.js
+// @downloadURL  https://github.com/WASD258-jpg/tsh-auto-brush/raw/main/tsh-auto-brush.user.js
 // ==/UserScript==
 
 (function () {
