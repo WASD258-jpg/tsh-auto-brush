@@ -7,7 +7,7 @@
 // @match        *://www.tsinghuaelt.com/*
 // @run-at       document-idle
 // @grant        none
-// @license      GPL-3.0
+// @license      GPL-3.0-only
 // @icon         https://www.tsinghuaelt.com/favicon.ico
 // @homepageURL  https://github.com/WASD258-jpg/tsh-auto-brush
 // @supportURL   https://github.com/WASD258-jpg/tsh-auto-brush/issues
