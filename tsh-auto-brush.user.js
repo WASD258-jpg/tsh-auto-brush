@@ -72,8 +72,24 @@
         DRAG_FILL: 'matching_dragfillblank',
         DROP_IMG: 'matching_imagedropdown',
         DROP_PARA: 'matching_paragraphdropdown',
-        COMBINED: 'combined_basic'
+        COMBINED: 'combined_basic',
+        READING: 'combined_read_comprehension',
+        ORAL_SPEAK: 'oral_simple_speak',
+        ORAL_FOLLOW: 'oral_follow_along',      // 注意：CSS 类名 listen-repeat-view 对应的就是它
+        ORAL_ROLEPLAY: 'oral_roleplay',
+        ORAL_WORDS: 'oral_vocabulary_learning'
     };
+
+    // 走「裸标量」编码的题型（parseAnswer / parseDoRecord 只对这两个走该分支）。
+    // 陷阱：judge_advanced 不在此列 —— 它的 doRecord 是 JSON 数组。
+    const BARE_SCALAR_TYPES = new Set([TYPE.SINGLE, TYPE.JUDGE]);
+
+    // 语音评测类题型（驰声 chivox 实时评测，必须真人录音）
+    const SPEECH_TYPE_LIST = [TYPE.ORAL_SPEAK, TYPE.ORAL_FOLLOW, TYPE.ORAL_ROLEPLAY, TYPE.ORAL_WORDS];
+
+    // 站点 createDoRecord 的空初值形态（用于判断"是否已作答"）
+    const EMPTY_AS_STRING = new Set([TYPE.SINGLE, TYPE.JUDGE, TYPE.ORAL_SPEAK]);
+    const EMPTY_AS_OBJECT = new Set([TYPE.WRITING, TYPE.TRANSLATE, TYPE.QA, TYPE.ORAL_ROLEPLAY]);
 
     // 题目状态枚举（站点变量 Z）
     const ST = {
@@ -320,12 +336,13 @@
     function detectType(el) {
         if (!el) return null;
         const has = s => !!$1(s, el);
-        if (has('.zty-exercise-item-fill-blank-do') || has('span.zty-exercise-item-fill-blank-do')) return TYPE.FILL;
+        // 语音类优先判定（其 DOM 特征最独特）
+        if (has('.role-play-course-container')) return TYPE.ORAL_ROLEPLAY;
+        if (has('.zty-exercise-view-main.listen-repeat-view')) return TYPE.ORAL_FOLLOW;
+        if (has('.oral-brief-course-do') || has('.oral-brief-course-done')) return TYPE.ORAL_SPEAK;
         if (has('.drag-drop-container')) return TYPE.DRAG_ONE;
-        if (has('.oral-brief-course-do') || has('.oral-brief-course-done')) return 'oral';
         if (has('.judge-option-item')) return TYPE.JUDGE;
-        if (has('.zty-exercise-view-main.listen-repeat-view')) return 'listen_repeat';
-        if (has('.role-play-course-container')) return 'role_play';
+        if (has('.zty-exercise-item-fill-blank-do') || has('span.zty-exercise-item-fill-blank-do')) return TYPE.FILL;
         if (has('input[type="radio"]') || has('.ant-radio-wrapper') || has('.ant-radio-group')) return TYPE.SINGLE;
         if (has('input[type="checkbox"]') || has('.ant-checkbox-wrapper') || has('.ant-checkbox-group')) return TYPE.MULTIPLE;
         if (has('textarea')) return TYPE.WRITING;
@@ -336,7 +353,7 @@
 
     // 语音评测类题型：走驰声 chivox 实时评测（wss://cloud.chivox.com + 麦克风采集 + 服务端打分），
     // 结构上无法靠填 DOM 作答，必须真实录音。识别出来是为了明确跳过并告知用户，而非静默失败。
-    const SPEECH_TYPES = new Set(['oral', 'listen_repeat', 'role_play']);
+    const SPEECH_TYPES = new Set(SPEECH_TYPE_LIST);
     function isSpeechType(type) { return SPEECH_TYPES.has(type); }
     function cardNeedsSpeech(el) {
         return isSpeechType(detectType(el)) ||
@@ -386,10 +403,12 @@
         return map;
     }
 
-    // 解析用户已有作答（用于判定"是否已答"）
+    // 解析 doRecord / answer。
+    // 【站点契约，已证实】parseAnswer / parseDoRecord 只对 choice_single 与 judge_basic
+    // 走「裸标量」分支；其余题型（**含 judge_advanced**）若为字符串则 JSON.parse。
     function decodeUserAnswer(raw, type) {
         if (raw === undefined || raw === null) return null;
-        if (type === TYPE.SINGLE || type === TYPE.JUDGE) return raw;
+        if (BARE_SCALAR_TYPES.has(type)) return raw;
         if (typeof raw === 'string') { try { return JSON.parse(raw); } catch (e) { return raw; } }
         return raw;
     }
@@ -562,13 +581,43 @@
     }
 
     // 判断某道题是否已有作答
+    // 判定某道题（含子题）是否已有作答。
+    // 站点契约：createDoRecord 按题型给空初值 —— 裸串题型为 ''，多数题型为 []，
+    // 主观题为 {answer:'',annex:[]}，角色扮演为 {roleId:'',answer:[]}。
+    // 组合题需递归看子题。
     function hasUserAnswer(q) {
-        const raw = q.doRecord !== undefined && q.doRecord !== null && q.doRecord !== ''
+        if (!q) return false;
+        if (q.children && q.children.length) {
+            return q.children.some(hasUserAnswer);
+        }
+        const type = q.type;
+        const raw = (q.doRecord !== undefined && q.doRecord !== null && q.doRecord !== '')
             ? q.doRecord
-            : (q.userAnswer || '');
+            : q.overWriteUserAnswer || q.userAnswer || '';
+
         if (raw === '' || raw === null || raw === undefined) return false;
-        if (Array.isArray(raw)) return raw.length > 0;
-        if (typeof raw === 'string') return raw.trim().length > 0;
+
+        let v = raw;
+        if (typeof v === 'string' && !BARE_SCALAR_TYPES.has(type)) {
+            const s = v.trim();
+            if (!s) return false;
+            try { v = JSON.parse(s); } catch (e) { return true; }   // 非 JSON 的裸串视为已答
+        }
+        if (typeof v === 'string') return v.trim().length > 0;
+        if (Array.isArray(v)) return v.length > 0;
+        if (typeof v === 'object') {
+            // 主观题 {answer, annex} / 角色扮演 {roleId, answer}
+            const ans = v.answer;
+            if (Array.isArray(ans)) return ans.length > 0;
+            if (typeof ans === 'string') return ans.trim().length > 0;
+            if (ans !== undefined && ans !== null) return true;
+            return Object.keys(v).some(k => {
+                const x = v[k];
+                if (Array.isArray(x)) return x.length > 0;
+                if (typeof x === 'string') return x.trim().length > 0;
+                return x !== undefined && x !== null;
+            });
+        }
         return true;
     }
 
@@ -663,6 +712,20 @@
                     if (!idxs.length) return false;
                     return selectOption(getOptions(card)[idxs[0]]);
                 }
+                case TYPE.JUDGE_HIGH: {
+                    // 多小题判断：doRecord 是数组（每子题一个答案），不是裸标量
+                    const arr = Array.isArray(value) ? value : [value];
+                    const rows = $('.judge-option-item', card);
+                    if (!rows.length) return false;
+                    let any = false;
+                    rows.forEach((row, i) => {
+                        if (arr[i] === undefined) return;
+                        const opts = $('.option-line', row).length ? $('.option-line', row) : $('label, .ant-radio-wrapper', row);
+                        const idxs = resolveOptionIndexes(row, arr[i]);
+                        if (idxs.length && opts[idxs[0]]) { selectOption(opts[idxs[0]]); any = true; }
+                    });
+                    return any;
+                }
                 case TYPE.MULTIPLE: {
                     const idxs = resolveOptionIndexes(card, value);
                     if (!idxs.length) return false;
@@ -701,6 +764,31 @@
                         if (opt) clickSeq(opt);
                     });
                     return true;
+                }
+                case TYPE.WRITING:
+                case TYPE.TRANSLATE:
+                case TYPE.QA:
+                case TYPE.CORRECT: {
+                    // 主观题：doRecord 形态为 {answer, annex}；答案是文本
+                    const text = (value && typeof value === 'object' && !Array.isArray(value))
+                        ? (value.answer || '')
+                        : (Array.isArray(value) ? value.join('') : String(value || ''));
+                    if (!String(text).trim()) return false;
+                    const ta = $1('textarea', card);
+                    if (ta) return fillInput(ta, String(text));
+                    const ce = $1('[contenteditable="true"]', card) ||
+                        $1('.zty-exercise-item-fill-blank-do', card);
+                    if (ce) return fillEditable(ce, String(text));
+                    const inp = $1('input[type="text"], input:not([type])', card);
+                    if (inp) return fillInput(inp, String(text));
+                    return false;
+                }
+                case TYPE.DRAG_ONE:
+                case TYPE.DRAG_MANY:
+                case TYPE.DRAG_FILL: {
+                    // 拖拽类需真实 DnD 事件序列，静态填充不可靠；标记为未适配交回调用方
+                    // （FLOW/TYPE 契约已给出 DOM 结构，但事件序列未实测，不做无把握的模拟点击）
+                    return false;
                 }
                 default:
                     // 未适配题型：记录但不阻断

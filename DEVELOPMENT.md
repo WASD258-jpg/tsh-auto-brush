@@ -136,7 +136,7 @@ function le(e, t) {
 
 ## 6. 题型与状态枚举（已证实）
 
-### 6.1 题型（站点变量 `Q`）
+### 6.1 题型（站点变量 `Q`，共 24 个字符串值）
 
 | 常量 | 字符串值 |
 | --- | --- |
@@ -159,6 +159,45 @@ function le(e, t) {
 | DropDownImg | `matching_imagedropdown` |
 | DropDownParagraph | `matching_paragraphdropdown` |
 | CombinationQuestion | `combined_basic` |
+| ReadingComprehension | `combined_read_comprehension` |
+| OralBrief | `oral_simple_speak` |
+| ListenAndRepeat | `oral_follow_along` |
+| RolePlay | `oral_roleplay` |
+| Words | `oral_vocabulary_learning` |
+
+**两个易错点**：
+- 不存在 `reading_comprehension` 这个字符串；同族题型是 `combined_read_comprehension`。
+- `listen_repeat` **不是题型字符串**，它是 CSS 类名（`listen-repeat-view`）；对应题型是 `oral_follow_along`。
+
+### 6.1.1 userAnswer 的最终编码（站点 `stringifyField`，@688462）
+
+```js
+stringifyField(e) {
+  if (e == null) return null;
+  if (typeof e === 'string') return e;                 // 裸串原样，不 JSON 化
+  if (Array.isArray(e) && e.length === 0) return '';   // 空数组 → 空串
+  try { return JSON.stringify(e) } catch (t) { return String(e) }
+}
+```
+
+| doRecord 形态 | userAnswer |
+| --- | --- |
+| 裸字符串（选项 idx 等） | 原样，**不加引号** |
+| 非空数组 / 对象 | `JSON.stringify(...)` |
+| 空数组 `[]` | `""` |
+
+站点 `createDoRecord` 给出的空初值（判断"作答了几题"的依据）：
+
+```js
+case SingleChoice: case Judge: case OralBrief: return '';          // 裸串 → 空串
+case MultipleChoice: ... case JudgeHigh: ... case ReadingComprehension: return [];   // 数组
+case Writing: case Translate: case QuestionsAndAnswers: return {answer:'', annex:[]};
+case ListenAndRepeat: case Words: return [];
+case RolePlay: return {roleId:'', answer:[]};
+```
+
+**注意**：`judge_advanced` 的 doRecord 是**数组**（每子题一个答案），不在裸标量分支；
+`oral_simple_speak` 的空值是**空字符串**而非数组。这两处极易与 `judge_basic` 混淆。
 
 ### 6.2 题目状态（站点变量 `Z`）
 
