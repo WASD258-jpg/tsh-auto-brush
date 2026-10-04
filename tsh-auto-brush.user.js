@@ -320,12 +320,27 @@
         // 兼容：未进入具体阅读器但在课程中心
         return /\/course_center\//.test(location.pathname);
     }
+    // 取顶层题卡。
+    // 【关键】组合题（combined_basic / combined_read_comprehension）的子题同样带
+    // `.exercise-item` 类，并以 `data-child-question-id` 标识，**嵌在父题卡片内部**
+    // （站点模板：div.exercise-item[data-child-question-id] 位于父题 div.exercise-item 之内）。
+    // 若直接 querySelectorAll('.exercise-item') 会把子题一并收进来，导致题卡索引错位、
+    // 答案与题目错配。因此必须过滤掉"祖先中已有 .exercise-item"的节点。
     function getExerciseItems() {
         const root = $1(SEL.readerRoot);
         if (!root) return [];
         let items = $(SEL.exerciseItem, root);
         if (!items.length) items = $(SEL.exercisePreview + ' ' + SEL.exerciseItem);
-        return items;
+        if (!items.length) return [];
+        const top = items.filter(el => {
+            let p = el.parentElement;
+            while (p && p !== root) {
+                if (p.classList && p.classList.contains('exercise-item')) return false;
+                p = p.parentElement;
+            }
+            return true;
+        });
+        return top.length ? top : items;
     }
 
     // ============================================================================
@@ -702,6 +717,167 @@
         return out;
     }
 
+    // ---- 拖拽类作答（matching_onetoonedrag / matching_onetomanydrag / matching_dragfillblank）----
+    //
+    // 【站点契约，已证实】事件序列（DragDropOneCourseDo @855532 / 组合式函数 MR @844180）：
+    //   dragstart  → dataTransfer.setData('text/plain', item.idx)，effectAllowed='move'
+    //   dragover   → preventDefault()，dropEffect='move'
+    //   dragenter  → 记录 activeDropZoneId
+    //   drop       → 读 dataTransfer.getData('text/plain') 写入 answer
+    //
+    // 投放区结构：div.drag-drop-container > div.drop-zone-list > div.drop-zone-item-wrapper
+    //             （绑定 onDrop / onDragover / onDragenter / onDragleave）
+    // 可拖项结构：div.drag-item-list > div.drag-item.drag-item-with-handle[draggable="true"]
+    //             （绑定 onDragstart / onDragend）
+    //
+    // 字段语义（与命名直觉相反，以代码为准）：
+    //   extension.drag    → 投放目标（drop-zone-item-wrapper）
+    //   extension.dragged → 可拖拽项（drag-item[draggable]）
+    //
+    // answer 形状：
+    //   onetoonedrag / onetomanydrag → [{ idx:"<投放区idx>", answer:["<拖拽项idx>", ...] }]
+    //   dragfillblank                → [{ idx:"<blankId>",  answer:"<拖拽项idx>" }]（扁平）
+    function applyDragAnswer(card, type, value) {
+        try {
+            const pairs = normalizeDragPairs(type, value);
+            if (!pairs.length) return false;
+
+            if (type === TYPE.DRAG_FILL) {
+                // 拖拽填空：目标是题干内的 span.blank-placeholder[data-blank-id]
+                let any = false;
+                pairs.forEach(p => {
+                    const target = $1('.blank-placeholder[data-blank-id="' + p.zone + '"], .inline-answer[data-blank-id="' + p.zone + '"]', card);
+                    const src = findDragSource(card, p.item);
+                    if (target && src) { simulateDragDrop(src, target, p.item); any = true; }
+                });
+                return any;
+            }
+
+            // 普通拖拽：目标是 div.drop-zone-item-wrapper（按 extension.drag 的 idx 匹配）
+            const zones = $('.drop-zone-item-wrapper', card);
+            if (!zones.length) return false;
+            let any = false;
+            pairs.forEach(p => {
+                const zone = findDropZone(card, zones, p.zone);
+                const src = findDragSource(card, p.item);
+                if (zone && src) { simulateDragDrop(src, zone, p.item); any = true; }
+            });
+            return any;
+        } catch (e) {
+            log('拖拽作答失败', type, e);
+            return false;
+        }
+    }
+
+    // 归一化拖拽答案为 [{zone, item}]，兼容两种站点形状
+    function normalizeDragPairs(type, value) {
+        const out = [];
+        let v = value;
+        if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { return out; } }
+        if (!Array.isArray(v)) return out;
+        v.forEach(entry => {
+            if (!entry || entry.idx === undefined) return;
+            const zone = String(entry.idx);
+            if (type === TYPE.DRAG_FILL) {
+                // 扁平：answer 是单项字符串
+                const it = Array.isArray(entry.answer) ? entry.answer[0] : entry.answer;
+                if (it !== undefined && it !== null && it !== '') out.push({ zone, item: String(it) });
+            } else {
+                const arr = Array.isArray(entry.answer) ? entry.answer : [entry.answer];
+                arr.forEach(it => {
+                    if (it !== undefined && it !== null && it !== '') out.push({ zone, item: String(it) });
+                });
+            }
+        });
+        return out;
+    }
+
+    // 按 extension.drag 的顺序找到投放区（站点按 extension.drag 渲染 drop-zone-item-wrapper）
+    function findDropZone(card, zones, zoneIdx) {
+        // 优先：按 data 属性匹配（若站点渲染了 idx）
+        const byData = $1('[data-idx="' + zoneIdx + '"]', card) ||
+            $1('[data-drop-zone-idx="' + zoneIdx + '"]', card);
+        if (byData) return byData;
+        // 兜底：按 extension.drag 数组下标定位
+        const ext = getCardExtension(card);
+        if (ext && Array.isArray(ext.drag)) {
+            const i = ext.drag.findIndex(d => String(d.idx) === zoneIdx);
+            if (i >= 0 && zones[i]) return zones[i];
+        }
+        return null;
+    }
+
+    // 找到可拖拽项元素（按 extension.dragged 的 idx 定位到 div.drag-item[draggable]）
+    function findDragSource(card, itemIdx) {
+        const draggables = $('.drag-item[draggable="true"], .drag-item', card);
+        if (!draggables.length) return null;
+        const byData = $1('[data-idx="' + itemIdx + '"]', card);
+        if (byData) return byData;
+        const ext = getCardExtension(card);
+        if (ext && Array.isArray(ext.dragged)) {
+            const i = ext.dragged.findIndex(d => String(d.idx) === itemIdx);
+            if (i >= 0 && draggables[i]) return draggables[i];
+        }
+        return null;
+    }
+
+    // 从当前题目数据里取 extension（可能为 JSON 字符串）
+    function getCardExtension(card) {
+        const list = (currentResp && currentResp.questionVOList) || [];
+        const id = card && card.dataset ? card.dataset.questionId : null;
+        const q = (id && list.find(x => Number(x.id) === Number(id))) ||
+            list[getExerciseItems().indexOf(card)];
+        if (!q) return null;
+        let ext = q.extension;
+        if (typeof ext === 'string') { try { ext = JSON.parse(ext); } catch (e) { return null; } }
+        return ext || null;
+    }
+
+    // 构造并派发完整 DnD 事件序列（含 dataTransfer 桩，因为脚本无法持有真实 DataTransfer）
+    function simulateDragDrop(srcEl, dstEl, payload) {
+        const dt = makeDataTransfer();
+        dt.setData('text/plain', String(payload));
+
+        fireDragEvent(srcEl, 'dragstart', dt);
+        fireDragEvent(dstEl, 'dragenter', dt);
+        fireDragEvent(dstEl, 'dragover', dt);
+        fireDragEvent(dstEl, 'drop', dt);
+        fireDragEvent(srcEl, 'dragend', dt);
+        return true;
+    }
+
+    // 最小 DataTransfer 实现（站点只用到 setData/getData/effectAllowed/dropEffect）
+    function makeDataTransfer() {
+        const store = {};
+        return {
+            effectAllowed: '',
+            dropEffect: '',
+            files: [],
+            types: [],
+            setData(k, v) { store[k] = String(v); if (this.types.indexOf(k) < 0) this.types.push(k); },
+            getData(k) { return store[k] === undefined ? '' : store[k]; },
+            clearData() { Object.keys(store).forEach(k => delete store[k]); },
+            setDragImage() {}
+        };
+    }
+
+    // 派发拖拽事件并挂上 dataTransfer（DragEvent 在部分环境不可构造，退回 Event + 属性注入）
+    function fireDragEvent(el, type, dt) {
+        if (!el) return false;
+        let ev;
+        try {
+            ev = new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt });
+        } catch (e) {
+            ev = new Event(type, { bubbles: true, cancelable: true });
+        }
+        // 兜底：确保 dataTransfer 一定可读（站点直接读 e.dataTransfer）
+        try {
+            if (!ev.dataTransfer) Object.defineProperty(ev, 'dataTransfer', { value: dt, configurable: true });
+        } catch (e) {}
+        el.dispatchEvent(ev);
+        return true;
+    }
+
     // 按题型把答案写入 DOM
     function applyAnswer(card, type, value) {
         try {
@@ -786,9 +962,7 @@
                 case TYPE.DRAG_ONE:
                 case TYPE.DRAG_MANY:
                 case TYPE.DRAG_FILL: {
-                    // 拖拽类需真实 DnD 事件序列，静态填充不可靠；标记为未适配交回调用方
-                    // （FLOW/TYPE 契约已给出 DOM 结构，但事件序列未实测，不做无把握的模拟点击）
-                    return false;
+                    return applyDragAnswer(card, type, value);
                 }
                 default:
                     // 未适配题型：记录但不阻断

@@ -293,7 +293,63 @@ function Ik(){ let e = localStorage.getItem('tsinghuayingyu-front.currUser');
 
 因此该键在新站**并非纯历史残留**，而是仍被语音模块使用（v2.0.0 自身不依赖它）。
 
-### 6.5 其它枚举
+### 6.6 拖拽类（已实现）
+
+三种拖拽题共用组合式函数 `MR`，事件序列**已证实**：
+
+```js
+dragstart  → e.dataTransfer.setData('text/plain', item.idx)，effectAllowed = 'move'
+dragover   → e.preventDefault()，dropEffect = 'move'
+dragenter  → 记录 activeDropZoneId
+drop       → 读 dataTransfer.getData('text/plain') 写入 answer
+```
+
+DOM 结构：
+
+```
+div.drag-drop-container
+  div.drop-zone-list
+    div.drop-zone-item-wrapper      ← 投放区（绑定 onDrop/onDragover/onDragenter/onDragleave）
+  div.drag-item-list
+    div.drag-item.drag-item-with-handle[draggable="true"]   ← 可拖项（绑定 onDragstart/onDragend）
+```
+
+**字段名与含义相反（以代码为准）**：`extension.drag` = 投放目标，`extension.dragged` = 可拖拽项。
+
+answer 形状：
+
+| 题型 | 形状 |
+| --- | --- |
+| `matching_onetoonedrag` / `matching_onetomanydrag` | `[{idx:"<投放区idx>", answer:["<拖拽项idx>", ...]}]` |
+| `matching_dragfillblank` | `[{idx:"<blankId>", answer:"<拖拽项idx>"}]`（**扁平，单项字符串**） |
+
+拖拽填空的目标是题干 HTML 内的 `span.blank-placeholder[data-blank-id]`（未答）/
+`span.inline-answer[data-blank-id]`（已答），由组件手动 `addEventListener` 绑定四个原生事件。
+
+实现说明：脚本用最小 `DataTransfer` 桩 + `DragEvent`（构造失败时退回 `Event` 并注入
+`dataTransfer` 属性）复现该序列，因为脚本无法持有真实 DataTransfer 对象。
+
+### 6.7 组合题与「题卡索引」陷阱（已修复的 bug）
+
+组合题（`combined_basic` / `combined_read_comprehension`）的子题**同样带 `.exercise-item` 类**，
+并以 `data-child-question-id` 标识，**嵌在父题卡片内部**：
+
+```js
+// 站点模板（src @839640）
+<div class="exercise-item" data-child-question-id={child.id}>
+  ...
+</div>   // 该节点位于父题 div.exercise-item 之内
+```
+
+因此 `querySelectorAll('.exercise-item')` 会把子题一并收进来，导致**题卡索引错位、
+标准答案与题目错配**。v2.0.0 的 `getExerciseItems()` 过滤掉「祖先中已有 `.exercise-item`」的节点，
+只返回顶层题卡。
+
+另：组合题顶层**自身不产生** `questionItemList` 条目，由 `le()` 展开 children，
+每个子题各自成为一条（与单题格式一致）。子题类型受站点硬约束——`AdaptGroupExerciseCourseDo`
+只支持 7 种：单选、多选、判断、填空、写作、翻译、问答、口语简述。
+
+### 6.8 其它枚举
 
 - `obSub`：`ob`（客观）/ `sub`（主观）
 - `learnMode`：`1 = Freedom` / `2 = Breakthrough`
