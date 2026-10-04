@@ -150,8 +150,23 @@
     }
 
     // 统一请求：自动带 elt-user-token，解析 {code,data,message}
+    //
+    // 【已证实的限流契约】站点全局拦截器对 429 只做提示 + reject，**无重试、无退避**：
+    //   if (status===429 || data.code===429) { error('提交过于频繁，请休息一下，1分钟后再试'); reject() }
+    // 因此脚本必须自己实现冷却，否则连击只会持续吃 429。
+    const RATE_LIMIT_COOLDOWN_MS = 60000;   // 与站点提示文案一致：1 分钟
+    let rateLimitedUntil = 0;
+
+    function isRateLimited() { return Date.now() < rateLimitedUntil; }
+    function rateLimitRemainSec() { return Math.max(0, Math.ceil((rateLimitedUntil - Date.now()) / 1000)); }
+    function enterRateLimit() { rateLimitedUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS; }
+
     async function api(path, opts) {
         opts = opts || {};
+        // 冷却期内不发请求（读接口豁免，避免正常浏览被阻断）
+        if (isRateLimited() && opts.method && opts.method !== 'GET') {
+            return { code: 429, message: '本地冷却中（剩余 ' + rateLimitRemainSec() + 's）', data: null, _localCooldown: true };
+        }
         const url = API_BASE + path;
         const qs = opts.params
             ? '?' + Object.entries(opts.params)
@@ -174,6 +189,12 @@
         }
         let body;
         try { body = await resp.json(); } catch (e) { return { code: resp.status, message: '响应非 JSON（HTTP ' + resp.status + '）', data: null }; }
+
+        // 限流：进入本地冷却
+        if (resp.status === 429 || (body && body.code === 429)) {
+            enterRateLimit();
+            return { code: 429, message: '触发限流，已冷却 ' + (RATE_LIMIT_COOLDOWN_MS / 1000) + 's', data: null, _rateLimited: true };
+        }
 
         // 令牌过期：尝试刷新一次后重试
         if (body && body.code === 401 && !opts._retried) {
@@ -424,15 +445,16 @@
     // ============================================================================
 
     // 点击分页按钮：dir='next' | 'prev'
-    // 成功判据（任一命中即视为翻页成功）：
-    //   1) URL 变化（分页模式）
-    //   2) 内容区 DOM 变化（stream 模式整章滚动，不动 URL）
-    //   3) 激活章节 data-catalog-id 变化
-    // 注意：issue 指出新站是"整章滚动 + 题卡内嵌"，不能只靠 URL 判定，
-    // 否则 stream 模式下会永远误判"已到最后一页"而提前停止。
+    //
+    // 【关键契约，已证实】阅读器内部**完全不改 URL**（全文无 location/href/history 写入）。
+    // 翻页只改内存状态：左按钮 `Se--`、右按钮 `Se++`，由 watcher 触发滚动与内容切换。
+    // 因此 URL 变化**不能**作为翻页判据，只能靠页面内容签名与分页计数文本。
+    //
+    // 另：右按钮在下一条目 lock 为真时 `disabled`（闯关模式未达标），此时视为无法前进。
     async function clickPagination(dir) {
         const btns = $(SEL.paginationBtn);
         if (!btns.length) return false;
+
         // 站点用 pagination-left / pagination-right 图标类区分方向
         let target = null;
         for (const b of btns) {
@@ -444,29 +466,60 @@
         // 兜底：最后一个按钮视为"下一页"
         if (!target && dir === 'next' && btns.length >= 2) target = btns[btns.length - 1];
         if (!target) return false;
+
+        // 站点自身用 disabled 表达"不可前进"（含 lock 未解锁）
         if (target.disabled || target.getAttribute('disabled') !== null) return false;
 
-        const beforeHref = location.href;
+        const beforeCounter = paginationCounter();
         const beforeSig = pageSignature();
         clickSeq(target);
 
         for (let i = 0; i < 30; i++) {
             await sleep(200);
-            if (location.href !== beforeHref) return true;      // 判据 1
-            if (pageSignature() !== beforeSig) return true;     // 判据 2 / 3
+            // 判据 1：分页计数文本变化（如 "3/42" → "4/42"）—— 最直接、最可靠
+            const c = paginationCounter();
+            if (c && c !== beforeCounter) return true;
+            // 判据 2：页面内容签名变化（激活节点 / contentId / 正文长度）
+            if (pageSignature() !== beforeSig) return true;
         }
         return false;
     }
 
+    // 读取分页计数文本。
+    // 站点模板（src 偏移 1572234）结构：
+    //   div[ button.pagination-btn(左), span(计数 "n/总数"), span.pagination-btn-wrap[ button.pagination-btn(右) ] ]
+    // 即计数 span 是 .pagination-btn-wrap 的**兄弟节点**，class 为 pagination-text。
+    function paginationCounter() {
+        // 优先：直接按站点类名取
+        const direct = $1('.pagination-text');
+        if (direct) {
+            const s = (direct.textContent || '').trim();
+            if (/^\d+\s*\/\s*\d+$/.test(s)) return s;
+        }
+        // 其次：从 wrap 的兄弟节点里找 n/m 形态
+        const wrap = $1('.pagination-btn-wrap') || $1(SEL.paginationBtn);
+        if (!wrap) return '';
+        const parent = wrap.parentElement;
+        if (parent) {
+            for (const c of Array.from(parent.children)) {
+                const s = (c.textContent || '').trim();
+                if (/^\d+\s*\/\s*\d+$/.test(s)) return s;
+            }
+        }
+        // 兜底：从 wrap 自身文本里提取
+        const m = (wrap.textContent || '').match(/(\d+)\s*\/\s*(\d+)/);
+        return m ? m[0] : '';
+    }
+
     // 页面内容签名：用于判断翻页是否真的生效（不依赖 URL 变化）
     function pageSignature() {
-        const route = parseReaderRoute();
         const activeChapter = $1('.chapter-section.active, .chapter-section.course.active, .chapter-section[data-active="true"]');
         const firstItem = $1(SEL.contentItem);
+        const counter = paginationCounter();
         return [
-            route && route.catalogId,
             activeChapter && activeChapter.dataset && activeChapter.dataset.catalogId,
             firstItem && firstItem.dataset && firstItem.dataset.contentId,
+            counter,
             $1(SEL.exercisePreview) ? getExerciseItems().length : 0,
             // 内容文本长度作为兜底信号（整章滚动时文本会变）
             ($1(SEL.readerRoot) ? ($1(SEL.readerRoot).textContent || '').length : 0)
@@ -719,36 +772,67 @@
     }
 
     // ============================================================================
-    // 9. 学习时长上报
+    // 9. 学习时长（防空闲熔断）
     // ============================================================================
+    //
+    // 【关键契约，已证实】站点**自身**已经在自动上报时长，无需脚本代劳：
+    //   Be(){ F.value = setInterval(() => { ze() || onSaveStudyTime(catalogId) }, 1e4) }   // 每 10 秒
+    //   function ze(){ return Date.now() - Le >= Ede }                                     // Ede = 6e5
+    //   Le 由 mousedown/mousemove/wheel/keydown/touchstart/touchmove/scroll 重置
+    //
+    // 即：只要页面开着且**用户在 10 分钟内有任何交互**，站点自己就会上报。
+    // 空闲 ≥ 10 分钟则跳过本次上报（熔断）。
+    //
+    // 因此脚本的正确职责不是"代刷"，而是**防止空闲熔断**：周期性派发无害的用户活动
+    // 事件，让站点自身的计时器保持活跃。这比直接重放上报接口更稳妥——
+    // 上报接口体 {bizId, contentType, catalogId} 与站点完全一致，
+    // 但由页面自己按节奏发出，不会产生异常密集的请求。
+    const STUDY_ACTIVITY_INTERVAL_MS = 60000;   // 每分钟轻推一次，远低于 10 分钟熔断阈值
+    const STUDY_ACTIVITY_EVENTS = ['mousemove', 'wheel', 'keydown', 'scroll'];
 
     let studyTimer = null;
     let studyCount = 0;
 
+    function keepAliveTick() {
+        // 派发 capture 阶段的用户活动事件（站点以 {capture:true, passive:true} 监听）
+        for (const name of STUDY_ACTIVITY_EVENTS) {
+            try {
+                const ev = name === 'keydown'
+                    ? new KeyboardEvent(name, { bubbles: true, cancelable: true })
+                    : (name === 'wheel'
+                        ? new WheelEvent(name, { bubbles: true, cancelable: true, deltaY: 0 })
+                        : new MouseEvent(name, { bubbles: true, cancelable: true, clientX: 0, clientY: 0 }));
+                window.dispatchEvent(ev);
+            } catch (e) { /* 事件构造失败不致命 */ }
+        }
+        studyCount++;
+        status('保活中 第' + studyCount + ' 次（防 10 分钟空闲熔断，站点自身每 10s 上报）');
+    }
+
     function startStudyFarm() {
         if (studyTimer) return;
         const r = parseReaderRoute();
-        if (!r || !r.catalogId) { status('请先进入阅读器具体章节再刷时长'); return; }
+        if (!r) { status('请先进入阅读器页面再开启时长保活'); return; }
         studyCount = 0;
-        studyTimer = setInterval(async () => {
-            const cur = parseReaderRoute();
-            if (!cur || !cur.catalogId) { stopStudyFarm(); return; }
-            const resp = await apiSaveStudyTime(cur.bizId, cur.contentType, cur.catalogId);
-            if (resp && resp.code === 200) {
-                studyCount++;
-                status('时长上报 第' + studyCount + ' 次（每 ' + (STUDY_INTERVAL_MS / 1000) + 's）');
-            } else {
-                status('时长上报失败：' + (resp && resp.message ? resp.message : '未知'));
-            }
-        }, STUDY_INTERVAL_MS);
+        keepAliveTick();   // 立即推一次，避免刚开启就处于空闲态
+        studyTimer = setInterval(() => {
+            if (!parseReaderRoute()) { stopStudyFarm(); return; }
+            keepAliveTick();
+        }, STUDY_ACTIVITY_INTERVAL_MS);
+        status('时长保活已开启（站点自身每 10s 上报，本功能仅防空闲熔断）');
     }
     function stopStudyFarm() {
         if (studyTimer) { clearInterval(studyTimer); studyTimer = null; }
         studyCount = 0;
     }
-    // 站点自身也是按停留时间累积；间隔过于激进不会加速（后端按真实时间节奏），
-    // 这里默认 60s 一次，兼顾"页面切走也能续报"与"不触发风控"。
-    const STUDY_INTERVAL_MS = 60000;
+
+    // 主动补一次时长上报（可选，用于页面切走等场景的兜底）
+    async function reportStudyTimeOnce() {
+        const r = parseReaderRoute();
+        if (!r || !r.catalogId) return false;
+        const resp = await apiSaveStudyTime(r.bizId, r.contentType, r.catalogId);
+        return !!(resp && resp.code === 200);
+    }
 
     // ============================================================================
     // 10. 成绩查询（新站接口）
@@ -922,14 +1006,13 @@
     let roundCount = 0;
     let noProgressRounds = 0;
     let invalidRounds = 0;
-    let cooldownUntil = 0;
     let statusEl = null;
     const MAX_ROUNDS = 500;
 
     async function doOneRound() {
-        if (cooldownUntil > Date.now()) {
-            const left = Math.ceil((cooldownUntil - Date.now()) / 1000);
-            status('冷却中 ' + left + 's，稍后自动继续');
+        // 限流冷却（站点自身无退避，必须由脚本控制节奏）
+        if (isRateLimited()) {
+            status('限流冷却中 ' + rateLimitRemainSec() + 's，稍后自动继续');
             return;
         }
         const route = parseReaderRoute();
@@ -1110,7 +1193,7 @@
             '  <div class="b6-group">' +
             '    <div class="b6-glabel">Data · 数据</div>' +
             '    <button id="b6-score" class="b6-btn">查成绩</button>' +
-            '    <button id="b6-farm" class="b6-btn">刷学习时长</button>' +
+            '    <button id="b6-farm" class="b6-btn">时长保活（防空闲熔断）</button>' +
             '    <button id="b6-check" class="b6-btn">结构自检（排错用）</button>' +
             '    <pre id="b6-out"></pre>' +
             '  </div>' +
@@ -1177,7 +1260,7 @@
         $1('#b6-start').addEventListener('click', () => {
             const b = $1('#b6-start');
             if (running) { stopRun('已停止'); return; }
-            running = true; roundCount = 0; noProgressRounds = 0; invalidRounds = 0; cooldownUntil = 0;
+            running = true; roundCount = 0; noProgressRounds = 0; invalidRounds = 0;
             b.textContent = '停止';
             status('运行中');
             loop();
@@ -1221,11 +1304,11 @@
             setTimeout(() => { scoreCooldown = false; }, 3000);
         });
 
-        // 刷时长
+        // 时长保活（站点自身每 10s 上报，本功能仅防 10 分钟空闲熔断）
         $1('#b6-farm').addEventListener('click', () => {
             const b = $1('#b6-farm');
-            if (studyTimer) { stopStudyFarm(); b.textContent = '刷学习时长'; }
-            else { startStudyFarm(); b.textContent = studyTimer ? '停止刷时长' : '刷学习时长'; }
+            if (studyTimer) { stopStudyFarm(); b.textContent = '时长保活（防空闲熔断）'; }
+            else { startStudyFarm(); b.textContent = studyTimer ? '停止保活' : '时长保活（防空闲熔断）'; }
         });
 
         // AI 设置

@@ -329,14 +329,114 @@ Pe = 1e3   // 内容完成上报队列间隔 1000ms
 | --- | --- |
 | 契约常量 | `API_BASE` / `TOKEN_KEY` / `CT` / `RT` / `TYPE` / `ST` / 节流常量 |
 | 工具 | `$` `$1` `sleep` `rnd` `click` `clickSeq` `fillInput` `fillEditable` |
-| API 层 | `api()` 统一请求（自动带令牌、401 自动刷新重试）+ 各接口包装 |
+| API 层 | `api()` 统一请求（自动带令牌、401 自动刷新重试、**429 本地冷却**）+ 各接口包装 |
 | 识别层 | `parseReaderRoute()` / `isReaderPage()` / `getExerciseItems()` / `detectType()` |
 | 答案层 | `loadCurrentExercise()` / `buildAnswerMap()` / `decodeAnswer()` / `applyAnswer()` |
 | 交互层 | `selectOption()` / `submitAnswers()` / `clickPagination()` / `fillByAnswerMap()` |
-| 推进层 | `doOneRound()` / `loop()` / `startStudyFarm()` |
+| 推进层 | `doOneRound()` / `loop()` / `keepAliveTick()` |
 | 自检 | `selfCheck()` — 打印路由/令牌/DOM 探针/题卡/按钮/取题接口结构 |
 | 上报 | `checkScriptValidity()` / `reportIssue()`（consent 门禁 + 24h 去重 + 打码） |
 | GUI | 双面板（主面板 + 设置面板）、可拖动、莱茵生命风配色 |
+
+---
+
+## 8bis. 关键运行时契约（已证实，直接影响实现正确性）
+
+以下三条来自对 `textbook-reader-5onku7rN.js` 与 `src-DqZ23PK2.js` 的逐段核对，
+推翻了若干想当然的假设，是 v2.0.0 实现的实际依据。
+
+### 8bis.1 翻页**不改 URL**
+
+阅读器全文内 `location` / `href` / `history` **0 命中**（唯一 `replaceState` 在 Vue Router 与 echarts 库内）。
+左右按钮只改内存状态：
+
+```js
+function Ge(){ ke.value || (Se.value = Math.max(0, Se.value - 1)) }   // 左
+function Ke(){ Ae.value || (Se.value = Math.min(xe.value.length - 1, Se.value + 1)) }  // 右
+```
+
+→ **URL 变化不能作为翻页判据。** 正确判据是分页计数文本（`pagination-text`，渲染为 `displayIndex/总数`）
+与页面内容签名。另：右按钮在下一条目 `lock` 为真时 `disabled`。
+
+分页栏真实结构：
+```
+div[ button.pagination-btn(左) , span.pagination-text("n/总数") , span.pagination-btn-wrap[ button.pagination-btn(右) ] ]
+```
+计数 span 与 `pagination-btn-wrap` 是**兄弟**关系。
+
+### 8bis.2 内容"完成"由 IntersectionObserver 自动触发，无需脚本代劳
+
+```js
+// 可见性埋点：selector = '[data-track-visibility="true"]'，threshold=0，rootMargin='0px'
+// 必须 dataset.contentId 与 dataset.catalogId 同时为真值；每 contentId 只触发一次；
+// 需在 delay 毫秒内持续可见（delay = visibilityDelay = 1000ms）
+// 只有 type===Content(5) 与 type===DoubleLanguagePage(13) 会被打上该属性
+```
+
+音视频类走另一条路：**播放进度 > 50%** 即上报。附件类（`UnitAnnexPreview`）**进入即上报**。
+
+上报经串行队列（`Pe = 1000ms` 间隔），队列排空后必然调用一次 `applyCategoryLock`
+刷新目录 `lock/progress`。**队列提交失败即丢弃，不重试。**
+
+→ 脚本不应手动轰炸 `submitCourseLearningContent`，交给页面自身机制即可；
+仅在需要主动推进时调用一次。
+
+### 8bis.3 学习时长由站点自己每 10 秒上报
+
+```js
+Be(){ F.value = setInterval(() => { ze() || onSaveStudyTime(o.value) }, 1e4) }   // 10000ms
+function ze(){ return Date.now() - Le >= Ede }                                   // Ede = 6e5 = 10 分钟
+// Le 由 mousedown/mousemove/wheel/keydown/touchstart/touchmove/scroll 重置（capture, passive）
+```
+
+**只要页面开着且 10 分钟内有任意交互，站点自身就会持续上报。**
+空闲 ≥ 10 分钟则跳过本次上报（熔断）。
+
+→ 脚本的正确职责是**防止空闲熔断**（周期派发无害活动事件保持计时器活跃），
+而不是"代刷"。v2.0.0 的 `keepAliveTick()` 即为此设计，间隔 60 秒，远低于熔断阈值。
+
+启用门闩（仅以下身份上报时长）：
+```js
+z = !M && f.auth===1 && !L && (userType===Student || userType===Tourist || (userType===Teacher && type===Public))
+L = courseStatus === -1 || publicCourseStatus === -1
+```
+
+### 8bis.4 限流：站点无退避，脚本必须自建
+
+```js
+// request.js 全局拦截器
+if (response.status===429 || data?.code===429) {
+  error('提交过于频繁，请休息一下，1分钟后再试'); return Promise.reject(response)
+}
+```
+**无重试、无退避、无冷却计时器**（文案里的"1 分钟"在代码中并不存在对应逻辑）。
+
+→ v2.0.0 在 `api()` 层实现本地冷却：命中 429 后写请求一律拦截 60 秒（读请求豁免），
+避免持续吃限流。
+
+### 8bis.5 AI 批改轮询的启用条件
+
+`Me = 3000ms`（间隔）、`Ne = 30`（上限）。两种触发：
+
+- `X(courseId, catalogId)`：需 `learnMode===Breakthrough` **且** `openAssess===true`
+  **且** `success!==0 && assessStatus===1`；
+- `ce(catalogId)`：需 `learnMode!==Breakthrough` **且** `openAssess===true`
+  **且本页含写作题或口语简答题**（`Set([Writing, OralBrief])`）。
+
+`success` 三态：`0` 无任务 / `1` 批阅中 / `2` 批阅完成。
+两个循环都是**先 `setTimeout` 再请求**（首次请求发生在 3 秒后）。
+
+### 8bis.6 阅读器内无行为监控
+
+全量扫描 282 个 JS：`textbook-reader-*` 内 `cheat / face / monitor / visibilitychange / blur /
+fullscreenchange` **全部 0 命中**；全站无 `sendBeacon`、无自建埋点接口。
+`fullscreenchange` 仅用于视频全屏同步与全屏时收起面板。
+
+「切屏强制交卷」「人脸核验/拍摄」「全屏作答」「最短作答时长」等反作弊项
+**全部是作业/考试（`homework-add` / `paper-add`）的教师端配置开关**，
+本次下载的静态产物中**未出现消费这些开关的学生答题运行时**。
+
+**唯一全站性监控是阿里云 RUM 会话回放**（`replay: true`，100% 采样，含 api 与 consoleError 采集）。
 
 ---
 
