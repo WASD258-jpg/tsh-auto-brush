@@ -27,8 +27,8 @@
  * 本版把两套引擎都内置，按路径只启动一套 —— 用户无需再判断该装哪个版本。
  *
  * 引擎来源：
- *   新版引擎 = v2.0.0（针对 Vue3 站点整体重写，依据线上产物静态逆向）
- *   旧站引擎 = v1.1.2（针对 Angular 站点，选择器与接口在 /legacy/ 产物中仍存在）
+ *   新版引擎：针对 Vue3 新版站点整体重写，依据线上产物静态逆向
+ *   旧站引擎：沿用旧版逻辑，其选择器与接口在 /legacy/ 产物中仍然存在
  *
  * 隔离方式：两个引擎各自独立 IIFE，不共享作用域。经原型验证，
  * 两版共 20 个同名函数（detectType/doOneRound/mkUI 等）在独立作用域下互不干扰。
@@ -40,13 +40,13 @@
  */
 
 // ============================================================================
-// 引擎 A · 新版（v2.0.0 逻辑）—— 包裹在独立作用域内
+// 引擎 A · 新版站点（/course_center/）—— 包裹在独立作用域内
 // ============================================================================
 function __TSH_NEW_ENGINE__() {
 
         'use strict';
 
-        const SCRIPT_VERSION = '2.0.0'; // 与 @version 保持一致
+        const SCRIPT_VERSION = '2.1.0'; // 与 @version 保持一致
 
         // ============================================================================
         // 1. 新站契约常量（逆向自线上产物，构建版本 20260930165203）
@@ -1476,7 +1476,7 @@ function __TSH_NEW_ENGINE__() {
                 '  <div id="b6-hex">R</div>' +
                 '  <div style="flex:1">' +
                 '    <div id="b6-hd-title">TSH AUTO STUDY</div>' +
-                '    <div id="b6-hd-sub">v' + SCRIPT_VERSION + ' · 新站适配</div>' +
+                '    <div id="b6-hd-sub">v' + SCRIPT_VERSION + ' · 新版</div>' +
                 '  </div>' +
                 '  <div id="b6-set-btn" title="设置">设置</div>' +
                 '  <div id="b6-x">&times;</div>' +
@@ -1686,7 +1686,7 @@ function __TSH_NEW_ENGINE__() {
 }
 
 // ============================================================================
-// 引擎 B · 旧站（v1.1.2 逻辑）—— 包裹在独立作用域内
+// 引擎 B · 旧站站点（/legacy/）—— 包裹在独立作用域内
 // ============================================================================
 function __TSH_OLD_ENGINE__() {
 
@@ -1743,7 +1743,7 @@ function __TSH_OLD_ENGINE__() {
 
         // ================= 脚本有效性检测 + GitHub Issue 上报 =================
         // 用途：开源托管时，若网站改版导致脚本失效，自动向 GitHub 发 issue（需用户同意；24h 去重防刷）
-        const SCRIPT_VERSION = '1.1.2'; // 与 @version 保持一致
+        const SCRIPT_VERSION = '2.1.0'; // 与 @version 保持一致
         const REPORT_KEY = 'tsh_auto_brush_report';
         let reportConfig = { consent: null, consentVersion: '', enabled: false, owner: '', repo: '', token: '', lastReport: 0 };
         function loadReportConfig() {
@@ -3168,7 +3168,7 @@ function __TSH_OLD_ENGINE__() {
 
     if (isNewSite) {
         try {
-            console.log('[刷课] 检测到新版站点，启动新版引擎 v2.0.0');
+            console.log('[刷课] 检测到新版站点，启动新版引擎 v2.1.0');
         } catch (e) {}
         __TSH_NEW_ENGINE__();
         return;
@@ -3176,7 +3176,7 @@ function __TSH_OLD_ENGINE__() {
 
     if (isLegacySite) {
         try {
-            console.log('[刷课] 检测到旧站 /legacy/，启动旧站引擎 v1.1.2');
+            console.log('[刷课] 检测到旧站 /legacy/，启动旧站引擎 v2.1.0');
         } catch (e) {}
         __TSH_OLD_ENGINE__();
         return;
