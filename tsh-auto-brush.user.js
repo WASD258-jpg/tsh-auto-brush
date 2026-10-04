@@ -2,7 +2,7 @@
 // @name         TSH自动刷课
 // @version      2.0.0
 // @namespace    wasd258-jpg.tsh-autobrush
-// @description  清华社英语在线（智慧版）自动刷课：适配 2026-09 Vue3 新站。自动答题+章节推进+查成绩+学习时长上报。支持单选/多选/判断/填空/下拉；语音题（口语/跟读）需真人录音，脚本会提示跳过。含结构自检与失效上报。
+// @description  【仅适配新版 /course_center/reader/】清华社英语在线（智慧版）自动刷课。若地址栏含 /legacy/ 说明你在旧站，请改用 v1.1.2。功能：自动答题+章节推进+查成绩+学习时长保活；支持单选/多选/判断/填空/下拉/拖拽；语音题需真人录音。含结构自检。
 // @author       WASD258-jpg
 // @match        *://www.tsinghuaelt.com/*
 // @run-at       document-idle
@@ -1097,6 +1097,31 @@
     }
 
     // ============================================================================
+    // 9b. 运行环境自检（装错版本的友好提示）
+    // ============================================================================
+    //
+    // 站点是双轨的：/legacy/ 是 Angular 旧站，/course_center/reader/ 才是本脚本适配的新版。
+    // 平台按账号属性分流（uc.izhixue.cn 返回 type=3 的账号会被送往旧站）。
+    // 装错版本时脚本不会报错、也不会做任何事 —— 所以在面板上明确说明，避免用户困惑。
+    function detectEnvironment() {
+        const path = location.pathname;
+        if (/^\/legacy\//.test(path) || path.indexOf('/legacy') === 0) {
+            return {
+                kind: 'legacy',
+                msg: '检测到旧站（/legacy/）——本版 v' + SCRIPT_VERSION +
+                     ' 只适配新版。旧站请改用 v1.1.2。'
+            };
+        }
+        if (/\/course_center\/reader\//i.test(path)) {
+            return { kind: 'reader', msg: '新版阅读器 —— 环境正常' };
+        }
+        if (/\/course_center\//.test(path)) {
+            return { kind: 'course_center', msg: '课程中心 —— 请进入具体教材/课程章节' };
+        }
+        return { kind: 'other', msg: '非教材页面' };
+    }
+
+    // ============================================================================
     // 10. 成绩查询（新站接口）
     // ============================================================================
 
@@ -1626,6 +1651,21 @@
         });
 
         log('v' + SCRIPT_VERSION + ' 已加载');
+
+        // 环境提示：装错版本（落在旧站）时直接说明，避免用户以为脚本坏了
+        const env = detectEnvironment();
+        log('运行环境:', env.kind, '|', env.msg);
+        if (env.kind === 'legacy') {
+            status('⚠ ' + env.msg);
+            const b = $1('#b6-start');
+            if (b) { b.disabled = true; b.style.opacity = '0.5'; b.textContent = '本版不支持旧站'; }
+            const one = $1('#b6-one');
+            if (one) { one.disabled = true; one.style.opacity = '0.5'; }
+            const farm = $1('#b6-farm');
+            if (farm) { farm.disabled = true; farm.style.opacity = '0.5'; }
+        } else {
+            status(env.msg);
+        }
     }
 
     // SPA 路由变化时不重建 UI（面板是 fixed 常驻）
