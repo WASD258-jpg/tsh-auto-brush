@@ -20,9 +20,15 @@
 
 <p align="center">
   <a href="https://github.com/WASD258-jpg/tsh-auto-brush/releases/latest">下载</a> ·
-  <a href="https://github.com/WASD258-jpg/tsh-auto-brush/issues/new">反馈</a> ·
-  <a href="https://openuserjs.org/scripts/WASD258/TSH%E8%87%AA%E5%8A%A8%E5%88%B7%E8%AF%BE">OpenUserJS</a>
+  <a href="https://github.com/WASD258-jpg/tsh-auto-brush/issues/new">反馈</a>
 </p>
+
+> **安装请走 GitHub Releases**（上方「下载」或 Release Assets 区）。
+>
+> OpenUserJS 上的版本**暂时停留在 v1.1.2（仅支持旧站）**，正在等待站点限流解除后更新。
+> 在它更新到 v2.1.0 之前，**请不要从 OpenUserJS 安装** —— 装到旧版后若你在新版页面上，脚本不会有任何反应。
+>
+> 装完可用「结构自检」按钮确认版本：面板标题栏会显示 `v2.1.0`。
 
 ---
 
