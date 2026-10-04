@@ -192,6 +192,36 @@ parseAnswer(e, t) {
 ```
 `doRecord`（学生作答）、`answer`（标准答案）、`extension`（题目结构）三者同规则。
 
+**关键：单选/判断的"裸标量"是 option 的 `idx` 值，不是字母。** 证据（`SingleChoiceCourseDone`）：
+
+```js
+// 选项渲染：显示字母 yO(t)，但 value 绑定的是 e.idx
+<RadioGroup value={doRecord}>
+  {extension.map((e, t) => <Radio value={e.idx}>{yO(t)}. {e.val}</Radio>)}
+</RadioGroup>
+
+// 判断题特例：value 固定为 "1" / "0"
+<Radio value="1"> A、正确 </Radio>
+<Radio value="0"> B、错误 </Radio>
+
+// 单选回显：用 answer 去 extension 里找 idx
+let t = extension.findIndex(t => t.idx === answer);
+return t >= 0 ? yO(t) : '';
+
+// 多选回显：answer 是 **数组**，元素为 option 的 idx
+Array.isArray(answer) && answer.includes(e.idx)
+
+// 判断回显：answer === '1' ? 'A' : 'B'
+```
+
+因此提交时：
+- `choice_single`：`userAnswer` = 正确选项的 `idx` 值（如 `"1"`）
+- `judge_basic`：`userAnswer` = `"1"`（正确）或 `"0"`（错误）
+- `choice_multiple`：`userAnswer` = idx 值构成的 **JSON 数组字符串**（如 `"[0,2]"`）
+
+v2.0.0 的实现**不猜字母映射**，而是读取 DOM 上真实的 `input.value` 来匹配
+（`getOptionValues()` / `resolveOptionIndexes()`），同时兼容字母与下标形态作为兜底。
+
 ### 6.4 语音评测题（硬边界，非可绕过项）
 
 新站的**口语 / 跟读 / 角色扮演**类题目走驰声 chivox **实时语音评测**，链路如下：

@@ -545,35 +545,77 @@
     }
 
     // 按题型把答案写入 DOM
+    // 取出卡片内各选项对应的"提交值"。
+    // 关键证据（src-DqZ23PK2.js，SingleChoiceCourseDone / 判断分支）：
+    //   <RadioGroup value={doRecord}>
+    //     {extension.map((e,t) => <Radio value={e.idx}>{yO(t)}. {e.val}</Radio>)}   // 显示字母，值却是 idx
+    //     判断题特例：<Radio value="1">A、正确</Radio> <Radio value="0">B、错误</Radio>
+    //   单选回显：extension.findIndex(t => t.idx === answer)
+    //   多选回显：Array.isArray(answer) && answer.includes(e.idx)
+    // 即 answer / doRecord 的线格式是 option 的 **idx 值**，不是字母。
+    // 因此优先读 DOM 上真实的 input.value 来匹配，而不是猜字母映射。
+    function getOptionValues(card) {
+        const opts = getOptions(card);
+        return opts.map((o, i) => {
+            const input = $1('input', o);
+            if (input && input.value !== undefined && input.value !== '') return String(input.value);
+            const radio = $1('[value]', o);
+            if (radio && radio.getAttribute('value') !== null) return String(radio.getAttribute('value'));
+            return String(i);
+        });
+    }
+
+    // 把答案值解析为"要点击的选项下标"列表。
+    // 兼容三种形态：站点 idx 值、字母 A/B、纯下标。
+    function resolveOptionIndexes(card, value) {
+        const opts = getOptions(card);
+        if (!opts.length) return [];
+        const values = getOptionValues(card);
+        const raws = Array.isArray(value) ? value : [value];
+        const out = [];
+        for (const raw of raws) {
+            if (raw === undefined || raw === null) continue;
+            const s = String(raw).trim();
+            if (!s) continue;
+            // 1) 直接匹配 DOM 上的提交值（最可靠）
+            let idx = values.indexOf(s);
+            // 2) 数字形态：先当 idx 值匹配，再当 0-based 下标
+            if (idx < 0 && /^\d+$/.test(s)) {
+                const n = Number(s);
+                idx = values.indexOf(String(n));
+                if (idx < 0 && n >= 0 && n < opts.length) idx = n;
+            }
+            // 3) 字母形态：转 0-based 下标（仅当答案确实用字母表示时）
+            if (idx < 0 && /^[A-Za-z]$/.test(s)) {
+                const n = s.toUpperCase().charCodeAt(0) - 65;
+                if (n >= 0 && n < opts.length) idx = n;
+            }
+            // 4) 布尔/中文形态（判断题）
+            if (idx < 0) {
+                if (/^(true|对|正确|1)$/i.test(s)) idx = values.indexOf('1') >= 0 ? values.indexOf('1') : 0;
+                else if (/^(false|错|错误|0)$/i.test(s)) idx = values.indexOf('0') >= 0 ? values.indexOf('0') : 1;
+            }
+            if (idx >= 0 && idx < opts.length && out.indexOf(idx) < 0) out.push(idx);
+        }
+        return out;
+    }
+
+    // 按题型把答案写入 DOM
     function applyAnswer(card, type, value) {
         try {
             switch (type) {
                 case TYPE.SINGLE:
                 case TYPE.JUDGE: {
-                    // 裸标量答案：可能是字母 "A" / "B"，或索引，或 true/false
-                    const opts = getOptions(card);
-                    if (!opts.length) return false;
-                    let idx = -1;
-                    const s = String(value).trim();
-                    if (/^[A-Za-z]$/.test(s)) idx = s.toUpperCase().charCodeAt(0) - 65;
-                    else if (/^\d+$/.test(s)) idx = Number(s);
-                    else if (/^(true|True|对|正确)$/.test(s)) idx = 0;
-                    else if (/^(false|False|错|错误)$/.test(s)) idx = 1;
-                    if (idx < 0 || idx >= opts.length) return false;
-                    return selectOption(opts[idx]);
+                    const idxs = resolveOptionIndexes(card, value);
+                    if (!idxs.length) return false;
+                    return selectOption(getOptions(card)[idxs[0]]);
                 }
                 case TYPE.MULTIPLE: {
+                    const idxs = resolveOptionIndexes(card, value);
+                    if (!idxs.length) return false;
                     const opts = getOptions(card);
-                    if (!opts.length) return false;
-                    const arr = Array.isArray(value) ? value : String(value).split(/[,\s]+/).filter(Boolean);
                     let any = false;
-                    for (const a of arr) {
-                        let idx = -1;
-                        const s = String(a).trim();
-                        if (/^[A-Za-z]$/.test(s)) idx = s.toUpperCase().charCodeAt(0) - 65;
-                        else if (/^\d+$/.test(s)) idx = Number(s);
-                        if (idx >= 0 && idx < opts.length) { selectOption(opts[idx]); any = true; }
-                    }
+                    for (const i of idxs) { if (selectOption(opts[i])) any = true; }
                     return any;
                 }
                 case TYPE.FILL:
