@@ -51,16 +51,16 @@ v2.0.0 是针对新版站点的重写：接口契约、路由、**24 种题型�
 但作者本人的账号被平台分流到了**旧站**（旧站「跳转新版」接口对其返回 `403 权限异常`，
 对应账号标识 `jumpPlat = 0`），**无法在登录态下实测新版**。
 
-所以 v2.0.0 当前状态是：**代码完整、静态逻辑自洽、111 项离线测试通过，但缺少实机验证**。
+所以当前版本的状态是：**代码完整、静态逻辑自洽、148 项离线测试通过，但缺少新版的实机验证**。
 
 ### 你要做的（约 1 分钟）
 
-如果你能正常打开 `/course_center/reader/...`（新版教材页）：
+如果你能正常打开 `/course_center/...`（新版页面）：
 
-1. 安装 v2.0.0
+1. 安装脚本（v2.1.0 双引擎版，自动适配，无需选择）
 2. 进入任意教材章节
 3. 点击面板上的 **「结构自检」** 按钮
-4. 把输出结果贴到 [issue #1](https://github.com/WASD258-jpg/tsh-auto-brush/issues/1)
+4. **[新建 issue](https://github.com/WASD258-jpg/tsh-auto-brush/issues/new)** 并把输出结果贴进去
 
 ### 自检输出包含什么（隐私说明）
 
@@ -82,10 +82,13 @@ v2.0.0 是针对新版站点的重写：接口契约、路由、**24 种题型�
 
 ### 联系方式
 
-统一走 GitHub，便于留档与他人参照：
+统一走 GitHub issue，便于留档与他人参照：
 
-- **结构自检结果 / 失效反馈** → [新建 issue](https://github.com/WASD258-jpg/tsh-auto-brush/issues)，或直接回复 [issue #1](https://github.com/WASD258-jpg/tsh-auto-brush/issues/1)
+- **[新建 issue](https://github.com/WASD258-jpg/tsh-auto-brush/issues/new)** —— 结构自检结果、失效反馈、新版验证协助，都请**开新 issue**
 - **愿意长期协助验证** → 在 issue 里说明，我会把你记入协作名单
+
+> 历史 issue #1（旧脚本失效诊断）**已关闭**。它记录的是改版前的问题与诊断过程，
+> 有考古价值但不再跟进。**新的反馈请一律开新 issue**，并附上「结构自检」输出。
 
 ---
 
@@ -94,12 +97,12 @@ v2.0.0 是针对新版站点的重写：接口契约、路由、**24 种题型�
 站点已于 2026-09 整体改版：前端从 **Angular 7** 换成 **Vue3 + Vite/rolldown**，
 API 从 `www.tsinghuaelt.com/tsenglish/` 迁到独立域名 `zhjyapi.tsinghuaelt.com/elt-user`。
 
-旧版（v1.1.2 及之前）依赖的全部 DOM 结构、路由与接口在新站均已不存在，功能整体失效
-（详见 [issue #1](https://github.com/WASD258-jpg/tsh-auto-brush/issues/1)）。
+旧版（v1.1.2 及之前）依赖的全部 DOM 结构、路由与接口在新版上均已不存在，功能整体失效
+（诊断过程见 [已关闭的 issue #1](https://github.com/WASD258-jpg/tsh-auto-brush/issues/1)，**请勿在该 issue 留言，新反馈请开新 issue**）。
 
-v2.0.0 是针对新站的**整体重写**，依据来自对线上构建产物的静态逆向，而非猜测：
+v2.0.0 是针对新版站点的**整体重写**，依据来自对线上构建产物的静态逆向，而非猜测：
 
-| 项 | 旧站（v1.x） | 新站（v2.0.0） |
+| 项 | 旧站（v1.x） | 新版（v2.x） |
 | --- | --- | --- |
 | API 域 | `www.tsinghuaelt.com/tsenglish/` | `zhjyapi.tsinghuaelt.com/elt-user` |
 | 鉴权 | MD5 签名 + `sea-fetch-path` + AES 专属头 | 单一请求头 `elt-user-token`（令牌在 `localStorage.eltUserToken`） |
