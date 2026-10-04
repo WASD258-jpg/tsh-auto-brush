@@ -1,11 +1,28 @@
-# TSH自动刷课
+<h1 align="center">🛠️ TSH自动刷课</h1>
 
-油猴脚本：自动完成清华社英语在线的教材/课程学习——自动答题、章节推进、查成绩、上报学习时长。
+<p align="center"><strong>v2.1.0 · 双引擎版</strong></p>
 
-- 作者：WASD258-jpg
-- 文件：`tsh-auto-brush.user.js`
-- 版本：**v2.1.0（双引擎版）**
-- 协议：[GPL-3.0](LICENSE)
+<p align="center">
+  <em>清华社英语在线（www.tsinghuaelt.com）油猴脚本。自动答题、章节推进、查成绩、学习时长保活。<br>
+  内置新旧两套引擎，按地址栏自动适配 —— 装一次通用。</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/WASD258-jpg/tsh-auto-brush/stargazers"><img src="https://img.shields.io/github/stars/WASD258-jpg/tsh-auto-brush?logo=github&label=Stars" alt="GitHub stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-3b82f6?style=flat" alt="GPL-3.0-only"></a>
+  <a href="https://github.com/WASD258-jpg/tsh-auto-brush/releases/latest"><img src="https://img.shields.io/badge/%E7%89%88%E6%9C%AC-v2.1.0-16a34a" alt="Version"></a>
+  <a href="https://www.tampermonkey.net/"><img src="https://img.shields.io/badge/Tampermonkey-Userscript-00485B?logo=tampermonkey&logoColor=fff" alt="Tampermonkey"></a>
+  <br>
+  <img src="https://img.shields.io/badge/JavaScript-F7DF1E?logo=javascript&logoColor=000" alt="JavaScript">
+  <img src="https://img.shields.io/badge/grant-none-lightgrey" alt="grant none">
+  <img src="https://img.shields.io/badge/%E5%8F%8C%E5%BC%95%E6%93%8E-%E6%96%B0%E7%89%88%20%2B%20%E6%97%A7%E7%AB%99-8b5cf6" alt="双引擎">
+</p>
+
+<p align="center">
+  <a href="https://github.com/WASD258-jpg/tsh-auto-brush/releases/latest">下载</a> ·
+  <a href="https://github.com/WASD258-jpg/tsh-auto-brush/issues/new">反馈</a> ·
+  <a href="https://openuserjs.org/scripts/WASD258/TSH%E8%87%AA%E5%8A%A8%E5%88%B7%E8%AF%BE">OpenUserJS</a>
+</p>
 
 ---
 
