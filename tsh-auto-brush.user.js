@@ -322,7 +322,15 @@ function __TSH_NEW_ENGINE__() {
             exerciseView: '.exercise-view',
             paginationBtn: '.pagination-btn',
             paginationWrap: '.pagination-btn-wrap',
-            answerCount: '.answer-count'
+            // 答题计数：产物中 exercise-actions 内渲染的两个容器为
+            //   hae = { class: 'unit-exercise-answer-account' }（作答情况/次数）
+            //   gae = { class: 'right-button' }（右侧按钮区）
+            // 旧命名 answer-count 在产物中仅 1 处且非独立类，保留作兼容探测。
+            // 另注：分页栏位于 .preview-navbar 内，仅在「预览模式 + 总页数>0」时渲染。
+            answerCount: '.answer-count',
+            answerAccount: '.unit-exercise-answer-account',
+            exerciseActions: '.exercise-actions',
+            previewNavbar: '.preview-navbar'
         };
 
         function isReaderPage() {
@@ -1176,37 +1184,146 @@ function __TSH_NEW_ENGINE__() {
         // ============================================================================
         // 11. 结构自检（关键：作者无法登录实测，交由用户反馈）
         // ============================================================================
+        //
+        // 设计要点（来自 issue #2 的实测反馈）：
+        //   1. 统计前先等渲染稳定 —— 首轮自检曾只数到 2 个题卡，实际有 17 个；
+        //      若照首轮结果推进，只会处理 2/17 的内容。
+        //   2. 输出「DOM 快照规模」作为可信度依据，让读者能判断这次统计是否可靠。
+        //   3. 探针区分「类名不存在」与「元素存在但类名不同」——
+        //      按语义宽匹配一次，把命中元素的 class 打印出来。
+        //   4. 题卡不只列前 5 条，另给题型分布汇总。
+
+        // 等待内容渲染稳定：连续两次采样题卡数不再增长，或超时
+        async function waitForStableRender(maxMs) {
+            const deadline = Date.now() + (maxMs || 6000);
+            let prev = -1, stable = 0;
+            while (Date.now() < deadline) {
+                const n = $(SEL.exerciseItem).length;
+                if (n > 0 && n === prev) {
+                    stable++;
+                    if (stable >= 2) return { stable: true, items: n, waited: true };
+                } else {
+                    stable = 0;
+                }
+                prev = n;
+                await sleep(400);
+            }
+            return { stable: false, items: $(SEL.exerciseItem).length, waited: true };
+        }
+
+        // 取某选择器命中元素的 class 摘要（最多 6 个不同值）
+        function classSummary(sel, limit) {
+            const els = $(sel);
+            if (!els.length) return null;
+            const set = new Set();
+            els.forEach(el => {
+                const c = (el.className || '').toString().trim();
+                if (c) set.add(c.length > 60 ? c.slice(0, 60) + '…' : c);
+            });
+            return Array.from(set).slice(0, limit || 6);
+        }
 
         async function selfCheck() {
             const out = [];
             const route = parseReaderRoute();
+
+            out.push('== 环境 ==');
+            out.push('URL: ' + location.pathname + (location.search || ''));
+            out.push('脚本版本: v' + SCRIPT_VERSION + '（' + detectEnvironment().kind + ' 引擎）');
+            out.push('');
+
             out.push('== 路由 ==');
             out.push(route ? JSON.stringify(route) : '未匹配阅读器路由：' + location.pathname);
             out.push('');
             out.push('== 令牌 ==');
             out.push('localStorage.' + TOKEN_KEY + '：' + (getToken() ? '存在（' + getToken().length + ' 字符）' : '缺失'));
             out.push('');
+
+            // ---- 渲染稳定性（issue #2 第 3 条）----
+            out.push('== 渲染稳定性 ==');
+            const before = $(SEL.exerciseItem).length;
+            const stab = await waitForStableRender(6000);
+            const after = $(SEL.exerciseItem).length;
+            out.push('题卡数：初次 ' + before + ' → 稳定后 ' + after +
+                (stab.stable ? '（已稳定）' : '（超时未稳定，结果可能偏少）'));
+            if (after > before) {
+                out.push('注意：初次统计偏少 ' + (after - before) + ' 个，已采用稳定后的数值');
+            }
+            out.push('');
+
             out.push('== DOM 探针 ==');
             for (const [name, sel] of Object.entries(SEL)) {
                 const n = $(sel).length;
-                out.push(sel + ' → ' + n + (n ? ' 命中' : ' 未命中'));
+                let line = sel + ' → ' + n + (n ? ' 命中' : ' 未命中');
+                if (!n) {
+                    // 未命中时尝试宽匹配，区分「不存在」与「类名不同」
+                    const kw = sel.replace(/^\./, '').split('-')[0];
+                    if (kw && kw.length >= 3) {
+                        const loose = classSummary('[class*="' + kw + '"]', 4);
+                        if (loose && loose.length) line += '  ⚠ 宽匹配 [class*="' + kw + '"] 命中：' + loose.join(' | ');
+                    }
+                }
+                out.push(line);
             }
             out.push('');
+            out.push('== 语义宽匹配（校准类名用）==');
+            for (const kw of ['fill', 'blank', 'option', 'answer', 'pagination', 'choice', 'contenteditable']) {
+                const sel = kw === 'contenteditable' ? '[contenteditable]' : '[class*="' + kw + '"]';
+                const n = $(sel).length;
+                out.push('  ' + sel + ' → ' + n + (n ? ('  ' + (classSummary(sel, 3) || []).join(' | ')) : ''));
+            }
+            out.push('');
+
+            // ---- 题卡 + 题型分布（issue #2 第 4 条）----
             const items = getExerciseItems();
             out.push('== 题卡 == 共 ' + items.length + ' 个');
-            items.slice(0, 5).forEach((el, i) => {
-                out.push('  #' + i + ' 推断题型=' + (detectType(el) || '未知') +
-                    ' 选项数=' + getOptions(el).length +
-                    ' 填空数=' + $('.zty-exercise-item-fill-blank-do', el).length);
+            const dist = {};
+            const details = [];
+            items.forEach((el, i) => {
+                const t = detectType(el) || '未知';
+                dist[t] = (dist[t] || 0) + 1;
+                if (i < 8) {
+                    details.push('  #' + i + ' 推断题型=' + t +
+                        ' 选项数=' + getOptions(el).length +
+                        ' 填空数=' + $('.zty-exercise-item-fill-blank-do', el).length +
+                        ' contenteditable=' + $('[contenteditable="true"]', el).length);
+                }
             });
+            if (details.length) out.push(details.join('\n'));
+            if (items.length > details.length) {
+                out.push('  …（仅列前 ' + details.length + ' 条，其余见下方分布）');
+            }
+            out.push('  题型分布：' + (Object.keys(dist).length
+                ? Object.entries(dist).map(([k, v]) => k + ' ×' + v).join(' / ')
+                : '（无）'));
             out.push('');
+
+            // ---- 按钮 ----
             out.push('== 按钮 ==');
             const sub = findSubmitButton(), ret = findRetryButton();
             out.push('Submit 按钮：' + (sub ? '存在' + (sub.disabled ? '（禁用）' : '') : '未找到'));
             out.push('Retry 按钮：' + (ret ? '存在' : '未找到'));
-            out.push('分页按钮：' + $(SEL.paginationBtn).length + ' 个');
+
+            // 分页按钮的渲染条件（已从产物证实）：
+            //   分页栏位于 div.preview-navbar 内，且受「预览模式 && 总页数>0」控制。
+            //   流式滚动模式（readMode==='stream'）下不渲染分页栏，此时 0 命中是正常的，
+            //   并非类名错误。故一并打印导航栏状态以便区分。
+            const hasNavbar = !!$1('.preview-navbar');
+            out.push('分页按钮(' + SEL.paginationBtn + ')：' + $(SEL.paginationBtn).length + ' 个');
+            out.push('分页计数(' + SEL.paginationWrap + ')：' + $(SEL.paginationWrap).length + ' 个');
+            out.push('分页栏容器(.preview-navbar)：' + (hasNavbar ? '存在' : '不存在'));
+            if (!$(SEL.paginationBtn).length) {
+                out.push('  → 说明：分页栏仅在「预览模式 + 总页数>0」时渲染；' +
+                    (hasNavbar ? '当前有导航栏但无分页按钮，可能非分页模式' : '当前无导航栏，可能为流式滚动模式') +
+                    '。这不代表类名错误。');
+            }
+            const pc = paginationCounter();
+            out.push('分页计数文本：' + (pc ? pc : '（未读到）'));
+            const pgLoose = classSummary('[class*="pagination"]', 5);
+            if (pgLoose) out.push('  宽匹配 [class*="pagination"] 命中：' + pgLoose.join(' | '));
             out.push('');
 
+            // ---- 取题接口（脱敏：只报字段名与长度，不报答案内容）----
             if (route && route.contentId) {
                 out.push('== 取题接口 ==');
                 const data = await loadCurrentExercise();
@@ -1218,10 +1335,23 @@ function __TSH_NEW_ENGINE__() {
                     if (first) out.push('首题字段：' + Object.keys(first).join(', '));
                     out.push('首题 type=' + (first && first.type) + ' obSub=' + (first && first.obSub));
                     const firstAns = (data.questionAnswerItemVOList || [])[0];
-                    if (firstAns) out.push('首条答案字段：' + Object.keys(firstAns).join(', ') + ' | answer=' + JSON.stringify(firstAns.answer).slice(0, 200));
+                    if (firstAns) {
+                        // 只报字段名与类型/长度，不回显答案内容（自检输出会贴到公开 issue）
+                        const desc = Object.keys(firstAns).map(k => {
+                            const v = firstAns[k];
+                            if (v === null || v === undefined) return k + '=null';
+                            if (Array.isArray(v)) return k + '=[array×' + v.length + ']';
+                            if (typeof v === 'object') return k + '={obj}';
+                            return k + '=(' + typeof v + ', len ' + String(v).length + ')';
+                        });
+                        out.push('首条答案字段：' + desc.join(', '));
+                    }
                 } else {
                     out.push('取题失败');
                 }
+            } else {
+                out.push('== 取题接口 ==');
+                out.push('跳过（URL 无 contentId）');
             }
             return out.join('\n');
         }
@@ -1337,6 +1467,12 @@ function __TSH_NEW_ENGINE__() {
             if (roundCount > MAX_ROUNDS) { stopRun('达到最大轮次保护(' + MAX_ROUNDS + ')，已停止'); return; }
 
             // 1) 取题（含标准答案）
+            //
+            // 取题前先等题卡渲染稳定（issue #2 实测反馈）：
+            // 页面内容异步加载，首轮可能只渲染出 2 个题卡而实际有 17 个。
+            // 若按未稳定的快照推进，只会处理其中一小部分内容。
+            await waitForStableRender(5000);
+
             const data = await loadCurrentExercise();
             if (!data) {
                 noProgressRounds++;
