@@ -809,6 +809,25 @@ function __TSH_NEW_ENGINE__() {
         return AI_ESSAY_TYPES.has(q.type);      // 写作 / 翻译 / 问答
     }
 
+    // 依据服务端**实际返回**判断题型性质 —— 比 obSub 标签可靠。
+    //
+    // 【实测的行为差异】
+    //   客观题：answerStatus ∈ {1, 2, 3}（已自动判分），且 answer 会下发标准答案
+    //   主观题：answerStatus === -1（服务端不自动判分），answer 不下发
+    //           （填空会返回 "Answers will vary." 之类，轮询对它零收益）
+    //   语音题：走第三方语音评测，空提交直接 500，answerStatus 始终不存在
+    //
+    // 返回 'objective' | 'subjective' | null（null = 尚未作答，无从判断）。
+    // 用途：首次作答时只能用 obSub 猜；一旦有返回，就应该以行为证据为准，
+    // 避免因为站点给了错的标签而把客观题当主观题（白调 AI）或反之（白轮询）。
+    function gradedKindOf(item) {
+        if (!item) return null;
+        const st = Number(item.answerStatus);
+        if (st === -1) return 'subjective';
+        if (st === 1 || st === 2 || st === 3) return 'objective';
+        return null;
+    }
+
     function htmlToText(html) {
         if (!html) return '';
         const d = document.createElement('div');
@@ -1663,6 +1682,17 @@ function __TSH_NEW_ENGINE__() {
         if (!Number.isFinite(threshold)) return false;
         const maxCalls = threshold + 3;
 
+        // 先看服务端有没有已经用 answerStatus === -1 表明这些题不由它自动判分。
+        // 若有，试错再多次也拿不到答案，只是白烧提交次数（还可能触发限流）——直接放弃。
+        {
+            const pre = buildAnswerMap(currentResp);
+            const kinds = questions.map(q => gradedKindOf(pre.get(Number(q.id))));
+            if (kinds.length && kinds.every(k => k === 'subjective')) {
+                status('这些题服务端不自动判分（answerStatus = -1），试错无法取得答案，跳过轮询');
+                return false;
+            }
+        }
+
         for (let calls = 0; calls < maxCalls; calls++) {
             const map = buildAnswerMap(currentResp);
             // "答案可用"= 有答案，且填空题的答案能真正摊平成每空一项。
@@ -1809,7 +1839,12 @@ function __TSH_NEW_ENGINE__() {
     // 10. 成绩查询（新站接口）
     // ============================================================================
 
-    // 新站成绩接口：/course/{courseId}/study/situation/overview 与 /course/{id}/class/base/info
+    // 新站成绩接口。
+    //
+    // 【实测】教师视角的 /course/{id}/class/base/info 对学生账号返回
+    //   403 您没有该操作权限
+    // 因此课程名/班级名不能从那里取。有权限的是学生视角的 /student/course/{id}/detail
+    // （含 title、courseClassName、teacherName、learnMode、errorNumShow）。
     async function fetchScore() {
         const r = parseReaderRoute();
         if (!r) return null;
@@ -1817,37 +1852,297 @@ function __TSH_NEW_ENGINE__() {
         if (!courseId) return { unsupported: true };
 
         const overview = await api('/course/' + courseId + '/study/situation/overview', { params: {} });
-        const base = await api('/course/' + courseId + '/class/base/info', { params: {} });
         if (!overview || overview.code !== 200) {
             return { error: overview && overview.message ? overview.message : '查询失败' };
         }
-        return { overview: overview.data, base: base && base.data };
+        // 下面两个接口失败不影响主流程，能取到就展示
+        const detail = await api('/student/course/' + courseId + '/detail', { params: {} });
+        const units = await api('/course/' + courseId + '/study/situation/unit/list', { params: {} });
+        return {
+            courseId: courseId,
+            overview: overview.data,
+            detail: detail && detail.code === 200 ? detail.data : null,
+            units: units && units.code === 200 ? units.data : null
+        };
     }
 
+    // 秒 → 中文可读时长
+    function formatDuration(sec) {
+        const n = Number(sec);
+        if (!Number.isFinite(n) || n <= 0) return '—';
+        const h = Math.floor(n / 3600);
+        const m = Math.floor((n % 3600) / 60);
+        const s = Math.floor(n % 60);
+        if (h > 0) return h + '小时' + (m > 0 ? m + '分' : '');
+        if (m > 0) return m + '分' + (s > 0 ? s + '秒' : '');
+        return s + '秒';
+    }
+
+    // 排名 → "第 9 / 39 名"；缺分母时只显示名次
+    function formatRank(rank, total) {
+        const r = Number(rank), t = Number(total);
+        if (!Number.isFinite(r)) return '—';
+        return Number.isFinite(t) && t > 0 ? r + '/' + t : String(r);
+    }
+
+    // 成绩面板。字段到中文的映射见 README「查成绩」一节。
     function formatScore(d) {
         if (!d) return '查询失败（需在课程阅读器页面且已登录）';
         if (d.unsupported) return '成绩查询仅支持「学生课程」，当前为教材页面';
         if (d.error) return '查询失败：' + d.error;
-        const lines = [];
-        if (d.base) {
-            lines.push('课程：' + (d.base.courseName || d.base.name || '—'));
-        }
+
         const o = d.overview || {};
-        const flat = (obj, prefix) => {
-            Object.entries(obj || {}).forEach(([k, v]) => {
-                if (v === null || v === undefined) return;
-                if (typeof v === 'object') return; // 只展示一层标量
-                lines.push((prefix ? prefix + '.' : '') + k + ': ' + v);
+        const det = d.detail || {};
+        const total = Number(o.classNum || o.courseNum) || 0;
+
+        const lines = [];
+
+        // —— 课程信息 ——
+        const title = det.title || det.parentTitle || '';
+        const cls = det.courseClassName ? ' · ' + det.courseClassName : '';
+        if (title) lines.push('课程：' + title + cls);
+        if (det.teacherName) lines.push('教师：' + det.teacherName);
+
+        // —— 学习模式（决定成绩取值，直接影响策略）——
+        const modeMap = { 1: '自由模式（成绩记末次）', 2: '闯关模式（成绩记最高）' };
+        if (det.learnMode !== undefined && det.learnMode !== null) {
+            lines.push('学习模式：' + (modeMap[Number(det.learnMode)] || ('未知(' + det.learnMode + ')')));
+        }
+        if (det.errorNumShow !== undefined) {
+            lines.push('答错 ' + det.errorNumShow + ' 次后显示答案');
+        }
+
+        // —— 三项核心指标 ——
+        lines.push('');
+        const sc = o.score === '' || o.score === null || o.score === undefined ? '—' : o.score;
+        lines.push('学习成绩：' + sc + '　　班级排名 ' + formatRank(o.courseScoreCourseRank, total));
+        lines.push('学习进度：' + (o.progress === undefined ? '—' : o.progress + '%')
+            + '　　班级排名 ' + formatRank(o.courseProgressCourseRank, total));
+        lines.push('学习时长：' + formatDuration(o.duration)
+            + '　　班级排名 ' + formatRank(o.courseStudyUseTimeCourseRank, total));
+
+        // —— 单元明细（只展示一层，够定位问题单元）——
+        const unitList = Array.isArray(d.units) ? d.units : [];
+        if (unitList.length) {
+            lines.push('');
+            lines.push('各单元：');
+            unitList.slice(0, 20).forEach(u => {
+                const s = u.score === '' || u.score === null || u.score === undefined ? '—' : u.score;
+                const p = u.progress === undefined || u.progress === null ? '—' : u.progress + '%';
+                lines.push('  ' + String(u.title || ('单元' + u.id)).slice(0, 28)
+                    + '　成绩 ' + s + '　进度 ' + p + '　时长 ' + formatDuration(u.duration));
             });
-        };
-        flat(o, '');
-        if (lines.length <= 1) lines.push('接口返回：' + JSON.stringify(o).slice(0, 400));
+        }
+
         return lines.join('\n');
     }
 
     // ============================================================================
-    // 11. 结构自检（关键：作者无法登录实测，交由用户反馈）
+    // 12bis. 自动连续刷课（跨节推进）
     // ============================================================================
+    //
+    // 【为什么需要】原先「开始刷课」只在阅读器页面内工作：从目录页点它，parseReaderRoute()
+    // 返回 null，只闪一行提示就退出 —— 用户看到的就是「点了完全没反应」。
+    // 而且一节处理完就停住，不会自动去下一节。本模块补上「像旧站那样，进了课程就能
+    // 从进度不足处自动往下刷」的能力。
+    //
+    // 【机制】状态存 localStorage，因为跨节推进靠 location.href 导航，页面会整页重载、
+    // 脚本重新注入 —— 必须靠持久化状态恢复「正在自动刷」这件事。
+    //
+    // 【遍历单位是 contentId 而非 catalogId】实测一个 catalog 下挂着多个内容项：
+    //   catalog 13053 → contentId 23882(type4) / 23883(type14) / 23884(type6)
+    // 所以要先按 catalog 的进度找到「未完成的叶子」，再取它的内容列表逐个处理。
+
+    const AUTO_RUN_KEY = 'tsh_auto_run';
+
+    function getAutoRun() {
+        try {
+            const s = localStorage.getItem(AUTO_RUN_KEY);
+            return s ? JSON.parse(s) : null;
+        } catch (e) { return null; }
+    }
+
+    function setAutoRun(v) {
+        try {
+            if (v) localStorage.setItem(AUTO_RUN_KEY, JSON.stringify(v));
+            else localStorage.removeItem(AUTO_RUN_KEY);
+        } catch (e) {}
+    }
+
+    // 当前页面对应的 bizId（课程 id）。
+    //
+    // 【实测的 URL 形态】
+    //   阅读器  /course_center/reader/student_course/{bizId}?catalogId=…&contentId=…
+    //   课程内页 /course_center/my_course/{courseId}/manage/1
+    //   课程列表 /course_center/my_course          ← 这里**拿不到** id，URL 与 DOM 都没有，
+    //                                              Vue 用编程式路由且不把数据挂到 DOM
+    // 所以列表页要靠 /student/school/course 接口拿课程清单。
+    function currentCourseId() {
+        const r = parseReaderRoute();
+        if (r && r.contentType === CT.STUDENT_COURSE) return r.bizId;
+        const m = location.pathname.match(/\/course_center\/[a-z_]+\/(\d{15,})/i);
+        if (m) return m[1];
+        const q = new URLSearchParams(location.search).get('courseId');
+        return q || null;
+    }
+
+    // 取当前账号的课程清单（含 courseId 与课程名）
+    async function fetchMyCourses() {
+        const r = await api('/student/school/course', { params: {} });
+        if (!r || r.code !== 200) return [];
+        const d = r.data;
+        const arr = Array.isArray(d) ? d : (d && (d.records || d.list)) || [];
+        return arr.filter(x => x && x.id).map(x => ({
+            id: String(x.id),
+            name: x.title || x.courseName || ('课程 ' + x.id)
+        }));
+    }
+
+    // 解析出要操作的课程：优先用面板里选中的，其次页面上下文，最后课程清单
+    async function resolveCourseId() {
+        const picked = ($1('#b6-course') && $1('#b6-course').value) || '';
+        if (picked) return picked;
+        const ctx = currentCourseId();
+        if (ctx) return ctx;
+        const list = await fetchMyCourses();
+        if (list.length === 1) return list[0].id;
+        if (list.length > 1) {
+            status('检测到 ' + list.length + ' 门课程，请在面板「课程」下拉中选择');
+            fillCourseSelect(list);
+            return null;
+        }
+        return null;
+    }
+
+    // 填充课程下拉
+    function fillCourseSelect(list) {
+        const sel = $1('#b6-course');
+        if (!sel || !list || !list.length) return;
+        const cur = sel.value;
+        sel.textContent = '';
+        const blank = document.createElement('option');
+        blank.value = '';
+        blank.textContent = '（自动）';
+        sel.appendChild(blank);
+        list.forEach(c => {
+            const o = document.createElement('option');
+            o.value = c.id;
+            o.textContent = String(c.name).slice(0, 20);
+            sel.appendChild(o);
+        });
+        if (cur) sel.value = cur;
+        sel.style.display = '';
+    }
+
+    // 找到下一个待处理的内容项：返回 { catalogId, contentId }，全部完成则返回 null
+    async function findNextTarget(courseId, doneSet) {
+        const cat = await api('/course/' + courseId + '/catalog/list/with/progress', {
+            params: { user_id: 0, type: 0 }
+        });
+        if (!cat || cat.code !== 200) return { error: cat && cat.message ? cat.message : '目录获取失败' };
+
+        // 扁平化出「叶子节点」，保持目录顺序
+        const leaves = [];
+        const walk = (arr) => {
+            (arr || []).forEach(n => {
+                const kids = n.children || [];
+                if (kids.length) walk(kids);
+                else leaves.push(n);
+            });
+        };
+        walk(cat.data || []);
+
+        const undone = leaves.filter(n => {
+            const p = Number(n.progress);
+            return !Number.isFinite(p) || p < 100;      // 无进度字段也视为未完成
+        });
+        if (!undone.length) return null;                 // 全部完成
+
+        // 逐个未完成目录找它的内容项，跳过已处理过的 contentId
+        for (const node of undone) {
+            const c = await apiGetContent(courseId, node.id, CT.STUDENT_COURSE);
+            if (!c || c.code !== 200) continue;
+            const list = Array.isArray(c.data) ? c.data : (c.data && c.data.list) || [];
+            const next = list.find(x => x && x.id && !doneSet.has(String(x.id)));
+            if (next) return { catalogId: node.id, contentId: next.id, title: node.title || '' };
+            await sleep(rnd(100, 200));
+        }
+        return null;
+    }
+
+    // 跳到某个内容项的阅读器页
+    function gotoContent(courseId, catalogId, contentId) {
+        const url = location.origin + '/course_center/reader/student_course/' + courseId
+            + '?catalogId=' + catalogId + '&contentId=' + contentId;
+        location.href = url;
+    }
+
+    // 处理完当前节后推进到下一节；由 doOneRound 尾部调用
+    async function autoAdvance() {
+        const st = getAutoRun();
+        if (!st || !st.active) return false;
+        const courseId = st.courseId || currentCourseId();
+        if (!courseId) { setAutoRun(null); status('自动刷课：无法确定课程，已停止'); return false; }
+
+        const r = parseReaderRoute();
+        if (r && r.contentId) st.done = Array.from(new Set((st.done || []).concat([String(r.contentId)])));
+        st.courseId = courseId;
+        setAutoRun(st);
+
+        const doneSet = new Set((st.done || []).map(String));
+        const next = await findNextTarget(courseId, doneSet);
+
+        if (next && next.error) { status('自动刷课：' + next.error + '，已停止'); setAutoRun(null); return false; }
+        if (!next) {
+            setAutoRun(null);
+            status('★ 自动刷课完成：该课程已无未完成内容（共处理 ' + doneSet.size + ' 项）');
+            stopRun('全部完成');
+            return false;
+        }
+        if (next.contentId === (r && r.contentId)) {
+            // 没推进（例如服务端尚未更新进度）——避免原地打转
+            st.stuck = (st.stuck || 0) + 1;
+            setAutoRun(st);
+            if (st.stuck >= 3) { setAutoRun(null); status('自动刷课：连续 3 次未见推进，已停止'); stopRun('未见推进'); return false; }
+        } else {
+            st.stuck = 0;
+            setAutoRun(st);
+        }
+        status('自动刷课 → 下一节：' + String(next.title).slice(0, 18)
+            + '（已处理 ' + doneSet.size + ' 项，剩余待刷）');
+        await sleep(rnd(600, 1000));
+        gotoContent(courseId, next.catalogId, next.contentId);
+        return true;
+    }
+
+    // 启动自动刷课（课程页与阅读器页都可调用）
+    async function startAutoRun() {
+        const courseId = await resolveCourseId();
+        if (!courseId) {
+            status('未能确定课程：请进入课程内页，或在面板「课程」下拉中选择一门');
+            return false;
+        }
+        const st = { active: true, courseId: courseId, done: [], stuck: 0 };
+        // 记录当前已处理的节，避免重复
+        const r = parseReaderRoute();
+        if (r && r.contentId) st.done.push(String(r.contentId));
+        setAutoRun(st);
+
+        if (r) {
+            // 已在阅读器：先处理当前节，其尾部会自动推进
+            status('自动刷课已启动（先处理当前节，再自动往下）');
+            return true;
+        }
+        // 在课程页：直接定位到进度不足的第一项
+        status('自动刷课：正在查找进度不足的内容...');
+        const next = await findNextTarget(courseId, new Set());
+        if (next && next.error) { status('自动刷课：' + next.error); setAutoRun(null); return false; }
+        if (!next) { status('★ 该课程已无未完成内容'); setAutoRun(null); return false; }
+        status('自动刷课 → 首节：' + String(next.title).slice(0, 18));
+        await sleep(rnd(400, 700));
+        gotoContent(courseId, next.catalogId, next.contentId);
+        return true;
+    }
     //
     // 设计要点（来自 issue #2 的实测反馈）：
     //   1. 统计前先等渲染稳定 —— 首轮自检曾只数到 2 个题卡，实际有 17 个；
@@ -2214,7 +2509,15 @@ function __TSH_NEW_ENGINE__() {
                 // 比 AI 更准（实测同一题 AI 五空全错、轮询得到的全对），且零 token 成本。
                 // 主观题才是 AI 唯一必要的场景 —— 服务端对它们不下发答案。
                 let left = questions.filter(q => !hasUserAnswer(q));
-                const subjectiveLeft = left.filter(isSubjective);
+                // 分流优先采用**服务端行为证据**（gradedKindOf），标签只作兜底：
+                // 有返回时以 answerStatus 为准，避免站点标签不准导致白调 AI 或白轮询。
+                const kindMap = buildAnswerMap(currentResp);
+                const subjectiveLeft = left.filter(q => {
+                    const kind = gradedKindOf(kindMap.get(Number(q.id)));
+                    if (kind === 'subjective') return true;
+                    if (kind === 'objective') return false;
+                    return isSubjective(q);          // 尚无返回 → 退回 obSub/题型标签
+                });
                 if (subjectiveLeft.length) {
                     if (aiEnabled()) {
                         status('主观题 ' + subjectiveLeft.length + ' 道（服务端不下发答案），改用 AI 作答');
@@ -2271,6 +2574,15 @@ function __TSH_NEW_ENGINE__() {
 
                 // 站点前端有硬门禁：未答完提交会被拦下（请完成所有习题后再提交）。
                 if (left.length) {
+                    // 【自动刷课时不能停】有些题本就无法自动作答 —— 典型是语音题（oral_*）：
+                    // 它走第三方语音评测（讯飞），需要真实音频，空提交直接 500。
+                    // 若在这里 stopRun，整个自动刷课就会卡在第一节语音题上。
+                    // 交给 loop 尾部的 autoAdvance 继续：它会把当前 contentId 记入 done，
+                    // 于是不会反复回到这里，而是跳到下一节。
+                    if ((getAutoRun() || {}).active) {
+                        status('本节 ' + left.length + ' 题无法自动作答（语音题需真人录音），跳过并继续下一节');
+                        return;
+                    }
                     stopRun('仍有 ' + left.length + ' 题无法作答，已停止以免空提交。');
                     return;
                 }
@@ -2347,12 +2659,20 @@ function __TSH_NEW_ENGINE__() {
             status('轮次异常：' + (e && e.message ? e.message : e));
         }
         if (!running) return;
+        // 自动连续刷课：一轮结束后推进到下一节。
+        // autoAdvance 走 location.href 导航，本页随即重载 → 直接返回结束本页循环，
+        // 新页面加载后由启动逻辑从持久化状态恢复继续刷。
+        if ((getAutoRun() || {}).active) {
+            const advanced = await autoAdvance();
+            if (advanced) return;
+        }
         timer = setTimeout(loop, rnd(6000, 10000));
     }
 
     function stopRun(msg) {
         running = false;
         if (timer) { clearTimeout(timer); timer = null; }
+        setAutoRun(null);                        // 停止时一并清掉跨页状态
         const b = $1('#b6-start');
         if (b) b.textContent = '开始刷课';
         status(msg || '已停止');
@@ -2443,6 +2763,9 @@ function __TSH_NEW_ENGINE__() {
             '  <div id="b6-s-x" style="cursor:pointer;padding:0 2px;font-size:14px;color:#9FB4C6">&times;</div>' +
             '</div>' +
             '<div style="padding:12px">' +
+            '  <div class="b6-glabel">Course · 课程</div>' +
+            '  <select id="b6-course" class="b6-in" style="display:none"></select>' +
+            '  <p style="font-size:11px;color:#7A8EA0;margin-bottom:6px">留空「自动」即识别当前页面；在课程列表页需在此选定。</p>' +
             '  <div class="b6-glabel">AI · 答题兜底</div>' +
             '  <p style="font-size:11px;color:#7A8EA0;margin-bottom:6px">仅在页面未下发标准答案时使用。</p>' +
             '  <label class="b6-label"><input type="checkbox" id="b6-ai-en"> 启用 AI 补答</label>' +
@@ -2491,12 +2814,16 @@ function __TSH_NEW_ENGINE__() {
         mkDrag($1('#b6-hd'), panel);
         mkDrag($1('#b6-s-hd'), sp);
 
-        $1('#b6-start').addEventListener('click', () => {
+        $1('#b6-start').addEventListener('click', async () => {
             const b = $1('#b6-start');
-            if (running) { stopRun('已停止'); return; }
+            if (running || (getAutoRun() || {}).active) { stopRun('已停止'); return; }
             running = true; roundCount = 0; noProgressRounds = 0; invalidRounds = 0;
             b.textContent = '停止';
-            status('运行中');
+            // 在课程页/目录页点击 → 自动定位到进度不足的内容并跳转；
+            // 在阅读器页点击 → 启动跨节连续刷（本页先处理，尾部自动推进）。
+            const ok = await startAutoRun();
+            if (!ok) { running = false; b.textContent = '开始刷课'; return; }
+            status('运行中（自动连续刷课）');
             loop();
         });
         $1('#b6-one').addEventListener('click', async () => {
@@ -2513,8 +2840,22 @@ function __TSH_NEW_ENGINE__() {
             $1('#b6-reopen').style.display = 'none';
             panel.style.display = 'block';
         });
-        $1('#b6-set-btn').addEventListener('click', () => {
+        $1('#b6-set-btn').addEventListener('click', async () => {
             sp.style.display = sp.style.display === 'none' ? 'block' : 'none';
+            // 打开设置时刷新课程下拉（课程列表页拿不到 id，只能从这里选）
+            if (sp.style.display === 'block') {
+                try {
+                    const list = await fetchMyCourses();
+                    if (list.length) {
+                        fillCourseSelect(list);
+                        const sel = $1('#b6-course');
+                        if (sel && !sel.value) {
+                            const ctx = currentCourseId();
+                            if (ctx) sel.value = ctx;
+                        }
+                    }
+                } catch (e) {}
+            }
         });
         $1('#b6-s-x').addEventListener('click', () => { sp.style.display = 'none'; });
 
@@ -2617,6 +2958,21 @@ function __TSH_NEW_ENGINE__() {
 
     // SPA 路由变化时不重建 UI（面板是 fixed 常驻）
     setTimeout(mkUI, 1500);
+
+    // 跨节导航后自动恢复。
+    // 自动刷课靠 location.href 整页跳转推进，页面重载后脚本重新注入 ——
+    // 必须从持久化状态恢复「正在自动刷」，否则每跳一次就停住。
+    (function resumeAutoRun() {
+        const st = getAutoRun();
+        if (!st || !st.active) return;
+        setTimeout(() => {
+            const b = $1('#b6-start');
+            if (b) b.textContent = '停止';
+            running = true; roundCount = 0; noProgressRounds = 0; invalidRounds = 0;
+            status('自动刷课：已恢复运行（已处理 ' + ((st.done || []).length) + ' 项）');
+            loop();
+        }, 2200);
+    })();
 
 }
 
