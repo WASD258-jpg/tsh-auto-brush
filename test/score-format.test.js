@@ -33,8 +33,8 @@ const OVERVIEW_RESP = {
 const COURSE_DETAIL_RESP = {
   code: 200, message: 'ok',
   data: {
-    id: '2095675591799939073', title: '新世界交互英语（第二版）',
-    courseClassName: '默认班级', teacherName: '袁文娟',
+    id: '2095675591799939073', title: '示例课程名',
+    courseClassName: '默认班级', teacherName: '示例教师',
     learnMode: 1, errorNumShow: 3, caculateToGrade: 1, learnTimeLimit: 0
   }
 };
@@ -111,9 +111,9 @@ function makeFetch(recorder) {
   ok('排名呈现为 x/y 形式', /\b9\s*\/\s*39\b/.test(String(out)));
 
   // 6. 课程信息必须真的取到（不依赖 403 的 class/base/info）
-  ok('显示课程名', String(out).includes('新世界交互英语'));
+  ok('显示课程名', String(out).includes('示例课程名'));
   ok('显示班级', String(out).includes('默认班级'));
-  ok('显示教师', String(out).includes('袁文娟'));
+  ok('显示教师', String(out).includes('示例教师'));
   ok('显示学习模式', /自由模式/.test(String(out)));
   ok('不显示「查询失败」', !/查询失败/.test(String(out)));
 
