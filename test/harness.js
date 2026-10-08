@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const SCRIPT = path.resolve(__dirname, '..', 'tsh-auto-brush.user.js');
+const SCRIPT = path.resolve(__dirname, '..', '..', 'tsh-auto-brush', 'tsh-auto-brush.user.js');
 const raw = fs.readFileSync(SCRIPT, 'utf8');
 
 // --- 1. 构造可断言的虚拟 DOM ---

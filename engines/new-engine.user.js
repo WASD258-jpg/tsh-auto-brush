@@ -436,7 +436,9 @@ function strategyOf(p) {
     };
 }
 
-// 服务端在答错几次后下发标准答案（未配置时保守取 1，即不依赖试错）
+// 服务端在答错几次后下发标准答案。
+// 读不到课程设置、或 errorNumShow 非正数时返回 **Infinity**，表示「永不试错」
+// （调用方用 Number.isFinite 判定，Infinity 即跳过试错）。
 function answerRevealThreshold(p) {
     if (!p || !p.loaded) return Infinity;          // 读不到 → 永不试错
     const n = Number(p.errorNumShow);
@@ -801,7 +803,12 @@ function isSubjective(q) {
 // 避免因为站点给了错的标签而把客观题当主观题（白调 AI）或反之（白轮询）。
 function gradedKindOf(item) {
     if (!item) return null;
-    const st = Number(item.answerStatus);
+    // 【易错】两种承载字段名不同，必须都认：
+    //   · buildAnswerMap() 产出的项用 `status`（内部短名）
+    //   · 接口原始题项用 `answerStatus`
+    // 只读其中一个会导致恒为 null —— 分类静默失效，且不报错，极难察觉。
+    const raw = item.answerStatus !== undefined ? item.answerStatus : item.status;
+    const st = Number(raw);
     if (st === -1) return 'subjective';
     if (st === 1 || st === 2 || st === 3) return 'objective';
     return null;
@@ -1597,17 +1604,22 @@ function flattenForSubmit(list, answerMap) {
     return out;
 }
 
-// ---- 试错取答案（仅在「成绩记最高」的模式下自动启用）----
+// ---- 试错取答案（两种学习模式都启用）----
 //
 // 【机制，实测】服务端只在作答次数累计到 errorNumShow 次后，才在
 // questionAnswerItemVOList[].answer 下发标准答案（见 DEVELOPMENT §11.3）。
 // 因此必须先制造「答错」，才可能拿到答案。
 //
-// 【风险控制 —— 本函数只允许在闯关模式下调用】
-// 自由模式记「末次」：试错中途的错误提交会成为最终成绩，只有最后一次答对才能挽回；
-// 若中途因限流或页面变动而中断，成绩就停在错误值上。
-// 闯关模式记「最高」：反复提交不会拉低成绩，试错无副作用。
-// 调用方必须先经 strategyOf() 判定 retrySafe。
+// 【为什么自由模式也跑】自由模式记「末次」，直觉上试错有风险（中途的错误提交会
+// 成为最终成绩）。但本轮试错流程保证：
+//   1. 每一轮**保持当前最优答案、只补空白**（见本函数内的占位逻辑），不覆盖已有作答；
+//   2. 拿到服务端答案后**立刻回填并再提交一次**闭环。
+// 因此整体是**单调改善**：最坏情况只是停在当前水平，不会比不试错更差；
+// 唯一例外是中途被限流打断，此时成绩停在最后一次提交的值。
+// 闯关模式记「最高」，反复提交本就无副作用。
+//
+// 【真实生效的门禁】只有 `answerRevealThreshold()` 返回有限值（即读到了 errorNumShow）。
+// 读不到课程设置时返回 Infinity → 直接跳过试错。`strat.retrySafe` 仅用于决定提示文案。
 //
 // 【闭环要求】拿到答案后**必须再提交一次正确答案**，否则成绩仍是上一次的错误值。
 
@@ -1674,6 +1686,22 @@ async function retryUntilAnswer(route, questions, threshold) {
 
     for (let calls = 0; calls < maxCalls; calls++) {
         const map = buildAnswerMap(currentResp);
+
+        // 【关键】missing 只能统计「本来就该下发答案」的题 —— 即客观题。
+        //
+        // 主观题（问答/写作/翻译/答案多样的填空）服务端**永不下发** answer
+        // （answerStatus 恒为 -1）。若把它们也算进 missing，那么本节只要含一道
+        // 主观题，`missing` 就永远非空 ——「答案已齐」分支永不进入，
+        // 客观题已经拿到的官方答案也就永远不回填，循环空转到 maxCalls 后返回 false。
+        // 实测（同节 1 客观 + 1 主观）：取题 7 次、提交 6 次、24.6 秒、返回 false；
+        // 而全客观的对照只需要 2 次提交、7 秒、返回 true。
+        const expectAnswer = (q) => {
+            const a = map.get(Number(q.id));
+            if (gradedKindOf(a) === 'subjective') return false;   // 行为证据优先
+            if (!a && isSubjective(q)) return false;              // 尚无返回，按标签判断
+            return true;
+        };
+
         // "答案可用"= 有答案，且填空题的答案能真正摊平成每空一项。
         // 注意：主观填空可能下发 "Answers will vary."，非空但无法作答，
         // 只看非空会误判为"已齐"从而卡住。
@@ -1683,7 +1711,7 @@ async function retryUntilAnswer(route, questions, threshold) {
             if (AI_FILL_TYPES.has(q.type)) return normalizeFillAnswer(a.answer) !== null;
             return true;
         };
-        const missing = questions.filter(q => !usable(q));
+        const missing = questions.filter(q => expectAnswer(q) && !usable(q));
 
         if (!missing.length) {
             // 答案已齐 → 先回到作答态（查看态下无法写入），再填入并提交
@@ -2746,7 +2774,7 @@ function mkUI() {
         '  <select id="b6-course" class="b6-in" style="display:none"></select>' +
         '  <p style="font-size:11px;color:#7A8EA0;margin-bottom:6px">留空「自动」即识别当前页面；在课程列表页需在此选定。</p>' +
         '  <div class="b6-glabel">AI · 答题兜底</div>' +
-        '  <p style="font-size:11px;color:#7A8EA0;margin-bottom:6px">仅在页面未下发标准答案时使用。</p>' +
+        '  <p style="font-size:11px;color:#7A8EA0;margin-bottom:6px">仅用于主观题（服务端不下发答案的题）。客观题走轮询取权威答案，不调用 AI。</p>' +
         '  <label class="b6-label"><input type="checkbox" id="b6-ai-en"> 启用 AI 补答</label>' +
         '  <input id="b6-ai-url" class="b6-in" placeholder="API Base URL（OpenAI 兼容）">' +
         '  <input id="b6-ai-key" class="b6-in" type="password" placeholder="API Key">' +

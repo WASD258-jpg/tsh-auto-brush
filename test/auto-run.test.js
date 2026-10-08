@@ -166,6 +166,28 @@ function makeFetch(recorder) {
     ok('全是主观题时不做无谓轮询', got === false, got);
   }
 
+  // ---------- 9. harness 选择器桩必须支持逗号分组 ----------
+  // 原实现按 split(/\s+/) 取最后一段，`.a, .b` 被当成 `.b` —— 只有最后一段参与匹配。
+  // 后果：getOptions() 的线上首选分支 '.ant-radio-wrapper, .ant-checkbox-wrapper'
+  // 在测试里完全落空，测到的是线上并不成立的路径（假绿）。外审第 6 节指出，已修。
+  {
+    const { makeEl } = require('./harness');
+
+    // 线上首选分支：antd 单选容器
+    const page = buildPage();
+    page.item1.appendChild(makeEl('label', 'ant-radio-wrapper'));
+    const T2 = await loadScript(makeEnv(page, READER_URL, makeFetch([])));
+    ok('逗号分组选择器能匹配 .ant-radio-wrapper（线上首选分支）',
+       T2.getOptions(page.item1).length > 0);
+
+    // 拖拽投放项分支
+    const page2 = buildPage();
+    page2.item1.appendChild(makeEl('label', 'option-content'));
+    const T3 = await loadScript(makeEnv(page2, READER_URL, makeFetch([])));
+    ok('只有 .option-content 时同样可取（拖拽分支）',
+       T3.getOptions(page2.item1).length > 0);
+  }
+
   console.log('\n=== 结果：' + pass + ' 通过 / ' + fail + ' 失败 ===\n');
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('\n异常:', e && e.stack || e); process.exit(1); });

@@ -20,7 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const REPO = path.resolve(__dirname, '..');
+const REPO = path.resolve(__dirname, '..', '..', 'tsh-auto-brush');
 const OUT = path.join(REPO, 'tsh-auto-brush.user.js');
 const ENGINES = path.join(REPO, 'engines');
 
@@ -81,7 +81,7 @@ const DISPATCHER = `
 //   - 新版引擎 → /course_center/
 //   - 旧站引擎 → /legacy/
 //
-// 两个引擎各自包在独立函数内，不共享作用域，因此共 20 处同名函数
+// 两个引擎各自包在独立 function 内，作用域完全隔离，因此 ~20 处同名符号
 // （detectType / doOneRound / mkUI / click / status 等）不会互相覆盖。
 // 存储键保持共用：两版的 aiConfig / reportConfig 结构完全一致，属共享配置。
 
