@@ -1,8 +1,14 @@
 # TSH自动刷课 — 开发文档
 
-> 脚本：`tsh-auto-brush.user.js`（v2.0.0，Tampermonkey 油猴脚本）
+> 脚本：`tsh-auto-brush.user.js`（v2.2.0，Tampermonkey 油猴脚本）
 > 作者：WASD258-jpg · 协议：GPL-3.0
 > 目标站点：`https://www.tsinghuaelt.com`（清华社英语在线 · 智慧版）
+>
+> **v2.2.0 起，本文档区分标注两类依据：**
+> - **[静态]** —— 来自对线上构建产物的逆向提取
+> - **[实测]** —— 2026-10-08 由志愿者学生账号在登录态下实测确认
+>
+> 凡两者冲突，**以 [实测] 为准**。被实测推翻的静态结论，在下文就地标注。
 
 ---
 
@@ -11,8 +17,9 @@
 对清华社英语在线（智慧版）教材/课程学习的自动刷课脚本：自动取题作答 + 章节推进 +
 查成绩 + 上报学习时长，AI 补答为可选兜底。
 
-开发方式：**静态逆向 + Vibe Coding**。本版（v2.0.0）的接口契约、路由、题型枚举与 DOM
-结构全部来自对线上构建产物的逆向提取，逐条附证据；详见第 3–7 节。
+开发方式：**静态逆向 + 登录态实测 + Vibe Coding**。本版（v2.2.0）的接口契约、路由、题型枚举与 DOM
+结构，先由对线上构建产物的逆向提取得出（逐条附证据，详见第 3–7 节），再经登录态实测校验
+（详见 §11）。**两者冲突处以实测为准。**
 
 ---
 
@@ -254,12 +261,25 @@ Array.isArray(answer) && answer.includes(e.idx)
 ```
 
 因此提交时：
-- `choice_single`：`userAnswer` = 正确选项的 `idx` 值（如 `"1"`）
+- `choice_single`：`userAnswer` = 正确选项的 `idx` 值
 - `judge_basic`：`userAnswer` = `"1"`（正确）或 `"0"`（错误）
-- `choice_multiple`：`userAnswer` = idx 值构成的 **JSON 数组字符串**（如 `"[0,2]"`）
+- `choice_multiple`：`userAnswer` = idx 值构成的 **JSON 数组字符串**（如 `"[…,…]"`）
+
+> **[实测修正] `idx` 不是数字下标，而是 UUID 字符串。**
+> 此前文档举例写成 `"0"`/`"1"`（如「`userAnswer` = `"1"`」），这是**误读** ——
+> 真实取值形如 `"bf9491b2-d657-e04f-31c1-c7281a231d47"`：
+>
+> ```json
+> "extension": "[{\"idx\":\"bf9491b2-d657-e04f-31c1-c7281a231d47\",\"val\":\"<p>Change is possible.</p>\"}, …]"
+> ```
+> 实测页面 DOM：`input[type=radio].value` 与 `extension[].idx` **逐字一致**。
+>
+> 例外：`judge_basic` 的提交值仍固定为裸标量 `"1"` / `"0"`（判断对错的语义值），
+> 而 `judge_advanced` 的 `extension.option[].idx` 同样是 UUID，其 `val` 为 `"T"` / `"F"`。
 
 v2.0.0 的实现**不猜字母映射**，而是读取 DOM 上真实的 `input.value` 来匹配
-（`getOptionValues()` / `resolveOptionIndexes()`），同时兼容字母与下标形态作为兜底。
+（`getOptionValues()` / `resolveOptionIndexes()`）—— **[实测] 这一做法是正确的**，
+因为 DOM 的 value 就是站点会提交的值。
 
 ### 6.4 语音评测题（硬边界，非可绕过项）
 
@@ -293,9 +313,9 @@ function Ik(){ let e = localStorage.getItem('tsinghuayingyu-front.currUser');
 
 因此该键在新站**并非纯历史残留**，而是仍被语音模块使用（v2.0.0 自身不依赖它）。
 
-### 6.6 拖拽类（已实现）
+### 6.6 拖拽类（已实现，[实测] 事件序列已触发验证）
 
-三种拖拽题共用组合式函数 `MR`，事件序列**已证实**：
+三种拖拽题共用组合式函数 `MR`，事件序列**已证实**（并已由 §11.9 在登录态触发验证通过）：
 
 ```js
 dragstart  → e.dataTransfer.setData('text/plain', item.idx)，effectAllowed = 'move'
@@ -394,10 +414,15 @@ div.textbook-preview-content
                   div.zty-exercise-item-fill-blank-do | div.drag-drop-container | div.oral-brief-course-do …
 ```
 
-其它关键类（CSS 产物交叉验证，全部命中）：
-`exercise-actions`、`unit-exercise-answer-account`、`answer-count`、`option-content`、`option-line`、
-`judge-option-item`、`judge-topic-item`、`pagination-btn`（`pagination-left` / `pagination-right`）、
-`pagination-btn-wrap`、`exercise-loading`、`chapter-title`、`catalog-main`。
+其它关键类（CSS 产物交叉验证；**[实测] 结果已标注**）：
+
+- ✅ 线上命中：`exercise-actions`、`unit-exercise-answer-account`、`option-content`、
+  `pagination-btn`（`pagination-left` / `pagination-right`）、`preview-navbar`
+- ❌ 线上**未命中**（原「全部命中」的说法有误）：
+  `answer-count`、`option-line`、`pagination-btn-wrap`、`chapter-title`、`catalog-main`
+- 分页计数容器实为 `.preview-pagination`（见 §11.4）
+- `judge-option-item` / `judge-topic-item` / `exercise-loading`：**未单独复核**
+  （本轮实测页面为选择题与拖拽题，未渲染判断题）
 
 提交按钮（ant-design-vue `<a-button block>`）：
 ```js
@@ -418,7 +443,7 @@ Pe = 1e3   // 内容完成上报队列间隔 1000ms
 
 ---
 
-## 8. 脚本架构（v2.0.0，IIFE 单文件，`@grant none`）
+## 8. 脚本架构（v2.2.0，IIFE 单文件，`@grant none`）
 
 | 层 | 内容 |
 | --- | --- |
@@ -453,11 +478,20 @@ function Ke(){ Ae.value || (Se.value = Math.min(xe.value.length - 1, Se.value + 
 → **URL 变化不能作为翻页判据。** 正确判据是分页计数文本（`pagination-text`，渲染为 `displayIndex/总数`）
 与页面内容签名。另：右按钮在下一条目 `lock` 为真时 `disabled`。
 
-分页栏真实结构：
+**[实测] 两项均得到验证**：
+- 翻页时 URL 确实不变（`location.pathname` 恒定，仅 query 由初始跳转决定）
+- 分页计数文本真实存在且格式为 `"25/377"`，翻页后数值递增 —— 判据可靠
+
+**分页栏真实结构（实测修正）**：
 ```
-div[ button.pagination-btn(左) , span.pagination-text("n/总数") , span.pagination-btn-wrap[ button.pagination-btn(右) ] ]
+div.preview-pagination
+  ├─ button.pagination-btn        （左）
+  ├─ button.pagination-btn        （右）
+  └─ span.pagination-text         （"25/377"）
 ```
-计数 span 与 `pagination-btn-wrap` 是**兄弟**关系。
+原文档写的 `span.pagination-btn-wrap` 嵌套结构 **在线上不存在**（命中数 0）：
+计数 span 与两个按钮是**同一容器下的兄弟**，该容器为 `.preview-pagination`。
+v2.2.0 已据此修正 `SEL.paginationWrap` 与 `paginationCounter()`。
 
 ### 8bis.2 内容"完成"由 IntersectionObserver 自动触发，无需脚本代劳
 
@@ -537,9 +571,9 @@ fullscreenchange` **全部 0 命中**；全站无 `sendBeacon`、无自建埋点
 
 ## 9. 与旧站的机制差异（重写要点）
 
-| 机制 | 旧站做法 | 新站做法（v2.0.0） |
+| 机制 | 旧站做法 | 新站做法（v2.2.0） |
 | --- | --- | --- |
-| 获取答案 | 提交一次 → 读回标准答案 → 修正 → 再提交 | 取题接口直接返回 `questionAnswerItemVOList[].answer`，一次填对 |
+| 获取答案 | 提交一次 → 读回标准答案 → 修正 → 再提交 | 机制相同但**门槛更高**：新站要答错累计 `errorNumShow` 次才在 `questionAnswerItemVOList[].answer` 下发答案（见 §11.3）。`questionVOList[].answer` 恒空 |
 | 作答模型 | 一页一题，`.page-next` 右箭头翻页 | 整章滚动 + 题卡内嵌，`pagination-btn` 切节 |
 | 时长上报 | hook `XMLHttpRequest` 抓 `studyTimeCountNew` 地址与 sign 后重放 | 直连 `POST /user/study/time/record`，无需 hook |
 | 提交 | 点 `button.wy-btn` | 点 `button.ant-btn`（Submit），或回退直连接口 |
@@ -548,7 +582,7 @@ fullscreenchange` **全部 0 命中**；全站无 `sendBeacon`、无自建埋点
 
 ---
 
-## 10. 失效上报（v2.0.0）
+## 10. 失效上报（v2.2.0）
 
 - 探针（**对照新站**）：`.textbook-preview-content` / `.unit-exercise-preview` / `.exercise-item` /
   `.pagination-btn` / `.chapter-section`
@@ -558,22 +592,431 @@ fullscreenchange` **全部 0 命中**；全站无 `sendBeacon`、无自建埋点
 
 ---
 
-## 11. 已知限制与未验证项
+## 11. 实测结论（v2.2.0 依据）
 
-**未在登录态端到端实测**（无可测账号）。以下为静态分析得出、但需实测确认的部分：
+### 11.1 实测环境 [实测]
 
-1. 各题型 `extension` / `answer` 的精确 JSON 结构
-2. 填空 `zty-exercise-item-fill-blank-do` 作答态是否为 `contenteditable`
-3. 拖拽 `drag-drop-container` 的有效事件序列（HTML5 DnD vs pointer）
-4. 取题接口对**学生身份**是否也下发 `answer` 字段（教师侧已证实含 `questionVOList`）
-5. 提交后响应回传的 `questionAnswerItemVOList` 具体形状
-6. 翻页按钮在 `stream` 阅读模式下是否存在
+| 项 | 值 |
+| --- | --- |
+| 账号 | 志愿者学生账号（`userType=6`、`jumpPlat=0`） |
+| 落入站点 | 新站 `/course_center/`（**未**走旧站分流） |
+| 阅读器 | `/course_center/reader/student_course/2095675591799939073` |
+| 规模 | 369 个目录叶节点、989 个内容项 |
+| 构建版本 | `20260930165203` |
+| 手段 | Chrome CDP 驱动真实登录态页面；未登录态静态产物为对照 |
 
-**排查手段**：面板「结构自检」按钮会打印上述相关运行时数据。
+> **纠错**：README/本文档此前把 `jumpPlat = 0` 当作「被分流旧站」的判据。
+> [实测] 该值为 0 的账号照样进入新站 —— **两者无因果关系**，原推断不成立。
 
-其它：
+### 11.2 待验证项的实测结果 [实测]
+
+| # | 原待验证项 | 结果 | 影响 |
+| --- | --- | --- | --- |
+| 1 | 各题型 `extension` / `answer` 的精确 JSON 结构 | 见 §11.3 | 已按实测实现 |
+| 2 | 填空 `zty-exercise-item-fill-blank-do` 是否 `contenteditable` | ✅ **是**（`span` + `contenteditable="true"`） | 填空写入路径成立 |
+| 3 | 拖拽 `drag-drop-container` 的有效事件序列 | ✅ **HTML5 DnD 有效**（触发式验证，见 §11.9） | 原实现成立，无需改 pointer |
+| 4 | 取题接口对**学生身份**是否下发 `answer` | ⚠️ **须分字段**：`questionVOList[].answer` 恒空；`questionAnswerItemVOList[].answer` 在答错达 `errorNumShow` 次后由服务端下发（见 §11.3） | 引擎应实现「试错取答案」 |
+| 5 | 提交后响应回传的 `questionAnswerItemVOList` 形状 | ✅ 形状确认；其中 `answer` 按 §11.3 的规则填充 | **试错法在新站可行** |
+| 6 | 翻页按钮在 `stream` 阅读模式下是否存在 | ✅ **存在**（`.pagination-btn` 恒为 2 个） | 翻页路径成立 |
+
+### 11.3 答案来源：需要区分两个字段 [实测，含一次自我更正]
+
+这一节经历了两次实测，第一版结论**下错了**，此处保留更正过程。
+
+#### 第一版结论（不完整）
+
+检查 `questionVOList[].answer`，抽样 40 个内容项 → **40/40 为空**，
+于是判定「站点不下发标准答案」。**这个判断是错的**，因为查错了字段。
+
+#### 更正后的结论
+
+标准答案出现在 **`questionAnswerItemVOList[].answer`**，且**只在两种情况下被填充**：
+
+| 情形 | `item.answer` | `item.answerStatus` | `item.rightRate` |
+| --- | --- | --- | --- |
+| 答错，且累计次数 < `errorNumShow` | `""`（空） | 3 | 0 |
+| **答错，累计次数 ≥ `errorNumShow`** | **服务端下发的标准答案** | 3 | 0 |
+| 答对 | 回显自己提交的答案 | 1 | 100 |
+
+**对照实验（同一课程内两处独立观察）**：
+
+```
+# A. 选择题 23969（未作答 → 逐次提交）
+起始      answerCount=0  item.answer=(无)
+第1次(A,错) answerCount=1  item.answer=""                  status=3  rightRate=0
+第2次(B,对) answerCount=2  item.answer="12b6610b-…"        status=1  rightRate=100
+
+# B. 选择题 23946（连续提交错误答案，全部答错）
+提交 4 次后 answerCount=4  item.answer="240f8800-fcd9-c9a6-eac2-2f771481c6a4"
+                          status=3  rightRate=0        ← 服务端下发的正确答案（对应选项 D）
+```
+
+B 组 `status=3`（答错）却拿到非空 `answer`，证明该值来自服务端而非回显。
+本课 `errorNumShow = 3`（见 §11.6），即**答错 3 次后开始下发**。
+
+#### 对引擎的含义
+
+`buildAnswerMap()` 读的正是 `questionAnswerItemVOList`，**方向本来就是对的**；
+问题在于 `doOneRound()` 在拿不到答案时直接停下，从未制造「答错足够多次」的条件。
+要利用这条路径，必须先提交若干次错误答案。
+
+`questionVOList[].answer` 确实恒为空 —— 这一点第一版结论没错，
+但它是**题面**字段，本来就不承担下发答案的职责。
+
+#### 判分口径（来自 `/course/{id}/detail` 与教师端配置文案）
+
+| 模式 | 说明（教师端界面原文） | 成绩取值 |
+| --- | --- | --- |
+| 自由模式 `learnMode=1` | 「学生答对即时显示答案与解析，答错 N 次后显示答案与解析」 | **记录末次答题结果** |
+| 闯关模式 `learnMode=2` | 「学生任务过关后显示答案与解析」 | **记录最高答题结果** |
+
+本课为**自由模式**（`learnMode=1`、`freeShowAnswer=1`、`errorNumShow=3`、`caculateToGrade=1`）。
+
+**反复提交的权重由此确定**：
+- 自由模式 → 末次覆盖，**最后一次提交决定成绩**
+- 闯关模式 → 取最高
+
+**成绩与时长分属两条通道**：`/course/{id}/study/situation/overview` 返回
+
+```json
+{ "score":"0", "progress":1, "duration":2730,
+  "courseScoreCourseRank":9, "courseProgressCourseRank":9, "courseStudyUseTimeCourseRank":8 }
+```
+
+`duration` 只参与「学习时长」排名，**不进入 `score`**。`learnTimeLimit` 是学习时长的
+**限制**开关而非计分项。**新站并非旧站那种「时长权重更高」的规则。**
+
+### 11.4 DOM 契约实测对照 [实测]
+
+| 选择器 | 静态结论 | 实测 |
+| --- | --- | --- |
+| `.textbook-preview-content` | 命中 | ✅ 1 |
+| `.textbook-content-fill` | 命中 | ✅ 1 |
+| `.chapter-section` | 命中 | ✅ 2（含 `data-catalog-id`） |
+| `.content-item` | 命中 | ✅ 5–7（含 `data-content-id` / `data-content-hash`） |
+| `.unit-exercise-preview` / `.exercise-list` / `.exercise-item` / `.exercise-content` / `.exercise-view` / `.instruction` / `.annex-list` | 命中 | ✅ 各 1 |
+| `.pagination-btn` | 命中 | ✅ 2 |
+| `.pagination-text` | 命中 | ✅ 1，文本形如 `"25/377"` |
+| **`.pagination-btn-wrap`** | 计数 span 的兄弟容器 | ❌ **0，不存在** |
+| `.exercise-actions` | 命中 | ✅ 1 |
+| `.unit-exercise-answer-account` | 命中 | ✅ 1 |
+| **`.answer-count`** | 关键类 | ❌ 0（宽匹配 `[class*="answer"]` 命中 `unit-exercise-answer-account` 等） |
+| **`.option-line`** | 选择题选项容器 | ❌ 0；实际为 `.ant-radio-wrapper`（选择题，4 个） |
+| `.option-content` | — | ✅ 拖拽题的投放项（8 个），**非选择题选项** |
+| **`.chapter-title`** / **`.catalog-main`** | 关键类 | ❌ 0 |
+| `.drag-drop-container` / `.drop-zone-item-wrapper` / `.drag-item` | 命中 | ✅ 1 / 8 / 8 |
+| `.judge-option-item` | 命中 | 本轮实测页为选择/拖拽题，**未渲染判断题**，此项未复核 |
+
+**分页栏真实结构**（修正 §8bis.1）：
+```
+div.preview-pagination
+  ├─ button.pagination-btn        （左）
+  ├─ button.pagination-btn        （右）
+  └─ span.pagination-text         （"25/377"）
+```
+即**单一容器下三个兄弟节点**，不存在嵌套的 `pagination-btn-wrap`。
+
+### 11.5 索引与编码形态 [实测]
+
+- `extension` 里选项的 `idx` 是 **UUID**（如 `"bf9491b2-d657-e04f-31c1-c7281a231d47"`），
+  **不是** `"0"`/`"1"` 这类数字下标。README 此前的表述有误。
+- DOM 上 `input[type=radio].value` **与 `extension[].idx` 完全一致** —— 印证
+  「读 DOM 真实 value 来匹配答案」的做法是正确的。
+- 判断题族：`judge_advanced` 的 `extension` 为
+  `{"option":[{"idx":"…","val":"T"},{"idx":"…","val":"F"}], "topic":[…]}`，
+  即选项值是 `T`/`F` 而非 `A`/`B`。
+- 内容类型（`content-item.type`）实测分布：`{2:40, 3:157, 4:361, 5:10, 6:62, 7:1, 12:8, 14:350}`。
+  其中 **`type=14` 数量最多**，是习题类内容。
+
+### 11.6 接口参数修正 [实测]
+
+| 项 | 静态文档 | 实测 |
+| --- | --- | --- |
+| `content_type`（student_course） | 未明确 | **必须为 2**；用 1 返回 `80020 内容项不存在！` |
+| 目录树接口参数 | `user_id, type` | 前端实际发 **`user_id=0&type=0`** |
+| 内容清单 | — | `GET /textbook/course/{bizId}/content/{catalogId}/list?content_type=2` |
+| 非习题内容 | — | 对非习题项取题返回 `601 该内容不是习题项！` |
+| 阅读进度 | GET/`POST /user/study/read/record` | ✅ 载荷 `{bizId, contentType, catalogId, contentId}` 一致 |
+| 时长上报 | `POST /user/study/time/record` | ✅ 载荷 `{bizId, contentType, catalogId}` 一致 |
+| 内容完成 | `POST /user/study/course/content/record` | ✅ 提交答案后站点自动顺带调用，载荷 `{courseId, catalogId, contentId}` |
+
+### 11.7 提交按钮状态机 [实测]
+
+- 未作答：按钮文案 **`Submit`**（`ant-btn ant-btn-default ant-btn-block`）
+- 提交后：文案变为 **`Retry`**
+- 与 §6.2 的状态机推断一致（`answer-submit` / `answer-retry`）
+
+### 11.8 其它限制（不变）
+
+- **语音题**走驰声 chivox 实时评测，必须真人录音，脚本识别后跳过，不伪造音频
 - 作业/考试模块有全屏监控、切屏自动提交、人脸抓拍（`/exam/*/face/capture`、`/exam/*/switch/scree`），脚本不触碰
 - 新站启用阿里云 RUM 会话回放（全站），操作会被记录
+
+### 11.9 拖拽事件序列：触发式验证通过 [实测]
+
+§6.6 推断的事件序列此前只在产物里读到，未在登录态触发过。本轮补齐：点 `Retry`
+使题目回到作答态，再用最小 `DataTransfer` 桩派发序列，观察投放区反馈。
+
+**验证结果**：投放区从
+`"1. cheetah 请拖拽到此区域"`（`.dropped-item` 数 = 0）
+变为
+`"1. cheetah a. animals, birds, etc. …"`（`.dropped-item` 数 = 1）。
+
+→ **HTML5 DnD 序列被站点接受，不需要 pointer 事件**。§6.6 的事件序列与字段语义
+（`extension.drag` = 投放目标、`extension.dragged` = 可拖项）均成立。
+
+**顺带确认的两个状态差异**：
+
+| 状态 | `.drag-item` class | `draggable` | 投放区提示 |
+| --- | --- | --- | --- |
+| 查看态（已提交） | `drag-item drag-item-with-handle view-mode` | `null` | 显示学生答案 |
+| 作答态（Retry 后） | `drag-item drag-item-with-handle` | `"true"` | `请拖拽到此区域` |
+
+即 **`draggable="true"` 只在作答态存在**；引擎 `findDragSource()` 里
+`.drag-item[draggable="true"], .drag-item` 的双选择器兜底是必要且正确的。
+
+### 11.10 「正确答案」容器存在但为空 [实测]
+
+已作答的拖拽题里，每个投放区下有两个兄弟容器：
+
+```html
+<div class="answer-container view-mode has-answer">
+  <div class="dropped-item user-answer wrong">…</div>   ← 学生答案，逐题标注对错
+</div>
+<div class="answer-container view-mode correct-answer has-answer">
+  <!---->                                              ← 空占位，未渲染
+</div>
+```
+
+**`.correct-answer` 容器在线上为空**（Vue 空占位注释）。这进一步印证 §11.3：
+站点**具备**展示正确答案的槽位，但**实际不下发**。
+
+> 产物里能读到控制这一行为的开关：
+> ```js
+> function te(){ let e = Number(t.textbookInfo?.errorNumShow); return Number.isFinite(e) && e>0 ? e : 1 }
+> ```
+> 即 `errorNumShow`（提交后允许查看答案的次数）。实测该课程下正确答案未渲染。
+
+**副产品**：`has-answer` 容器内的 `.dropped-item.user-answer.wrong` 直接标出**逐题对错**
+（`wrong` / 对应地会有 `right`），可用于定位哪些题答错。
+
+### 11.12 作答策略：模式决定「敢不敢试错」[实测]
+
+#### 为什么必须先分清模式
+
+两种模式的判分口径**相反**，直接决定反复提交的后果：
+
+| 模式 | `learnMode` | 成绩取值 | 试错后果 |
+| --- | --- | --- | --- |
+| 自由模式 | 1 | 记**末次** | ⚠️ 中途的错误提交会成为最终成绩；只有最后一次答对才能挽回 |
+| 闯关模式 | 2 | 记**最高** | ✅ 反复提交不会拉低成绩 |
+
+**因此「先分清模式」是作答的前置条件，而不是可选项。**
+
+#### 实现（v2.3.0）
+
+判分口径来自 `GET /course/{id}/detail`（阅读器页面自身也调这个接口）：
+
+```json
+{ "learnMode":1, "freeShowAnswer":1, "passShowAnswer":1,
+  "errorNumShow":3, "caculateToGrade":1, "learnTimeLimit":0 }
+```
+
+引擎据此分三条路径：
+
+1. `loadCoursePolicy()` —— 作答前拉取并缓存策略
+2. `strategyOf()` —— 推出 `retrySafe`（该模式下反复提交是否安全）
+3. `answerRevealThreshold()` —— 由 `errorNumShow` 得到答案下发阈值，**读不到则返回 `Infinity`（永不试错）**
+
+策略分派：
+
+- **闯关模式** → 未下发答案时调用 `retryUntilAnswer()` 自动试错，取到答案后回填并**再提交一次**闭环
+- **自由模式** → **不自动试错**，无答案且未配 AI 时 `stopRun` 并说明原因
+- **读不到策略** → 一律 `retrySafe:false`
+
+自检面板会输出判定结果（实测样例）：
+
+```
+== 课程判分策略 ==
+学习模式: 自由模式（learnMode=1）
+成绩取值: 记末次答题结果
+反复提交: 有风险（记末次，错误提交会成为最终成绩）
+答案下发阈值 errorNumShow: 3（答错达该次数后服务端下发标准答案）
+计入成绩 caculateToGrade: 1；学习时长限制 learnTimeLimit: 0
+```
+
+#### 关于「会不会触发反作弊」
+
+实测范围内的结论（与 §8bis.6 一致）：**教材阅读器内无行为监控**。
+全量扫描 282 个产物，`textbook-reader-*` 中 `cheat / face / monitor /
+visibilitychange / blur / fullscreenchange` 全部 0 命中；全站无 `sendBeacon`、无自建埋点。
+人脸抓拍、切屏提交等反作弊**只存在于作业/考试模块**，不适用于教材阅读。
+
+真正需要控制的是：**阿里云 RUM 会话回放**（全站开启）与**站点自身没有限流退避**。
+故试错做了随机化节流（每次提交间隔 600–1200ms、轮间 1600–2800ms），
+并且**只在无副作用的闯关模式下自动启用**。
+
+### 11.13 修复：`questionAnswerItemVOList` 未合并导致的两个缺陷 [实测]
+
+站点前端在渲染前会把两个列表按 `questionId` 合并（`src-DZ23PK2` 的 `T()` / `E()`）：
+
+```js
+function T(e, t) {
+  let n = t.get(e.id);
+  e.doRecord = n?.overWriteUserAnswer || n?.userAnswer || ``;
+  e.answer   = n?.answer || ``;
+  ...
+}
+```
+
+`doRecord` / `overWriteUserAnswer` / `userAnswer` **只存在于 `questionAnswerItemVOList` 的元素上**，
+`questionVOList` 的元素里没有这些字段。引擎此前漏了合并，于是：
+
+- **缺陷 A**：`hasUserAnswer()` 恒为 `false` —— 已作答的题也被当成未答
+- **缺陷 B**：由此永远走「未作答」分支，**「已全部作答」分支从未被执行过**；
+  修好 A 之后才暴露出该分支里多写了一次 `submitAnswers()`，导致对同一节**重复提交同一份答案**
+  （实测连发 4 次相同载荷）
+
+**修复**：新增 `mergeAnswerItems()` 在 `loadCurrentExercise()` 内调用；
+「已全部作答」分支改为**直接推进下一节**（`doRecord` 有值即说明服务端已记录，无需再提交）。
+
+**复验**：对一节已完成作答的页面启动刷课，`POST /question/submit/answer` 请求数 = **0**（修复前为 4）。
+
+### 11.15 AI 补答接入与填空题作答：三处实测修复 [实测]
+
+用真实 API（DeepSeek 的 Anthropic 兼容层，`https://api.deepseek.com/anthropic`）跑通
+「取题 → AI 补答 → 填入 → 提交 → 计分」全链路后，修正了三处此前想当然的地方。
+
+#### (a) 请求格式必须自适应
+
+服务端的模型是分格式的。实测两种情况都遇到了：
+
+```
+POST /chat/completions  → 400
+  Model "claude-sonnet-5" must be called via /provider/v1/messages (Anthropic Messages shape).
+```
+
+```json
+// DeepSeek 的模型名也踩了坑
+{"error":{"message":"The supported API model names are deepseek-flash, deepseek-v4-pro,
+  but you passed deepseek_flash."}}
+```
+
+**修正**：`aiFormat()` 按 Base URL 是否含 `anthropic`/`commandcode` 自动选择格式；
+`aiEndpoint()` 兼容末尾带不带 `/v1`。Anthropic 走 `x-api-key` + `anthropic-version`，
+正文取 `content[]` 中 `type === 'text'` 的块。
+
+#### (b) 推理模型会把 token 额度全烧在思维链上
+
+这是最隐蔽的一处。`deepseek-flash` 默认先产出一大段 `thinking`：
+
+```
+max_tokens=1024 → stop=max_tokens  blocks=["thinking"]           text=""   ✗
+max_tokens=4096 → stop=max_tokens  blocks=["thinking"]           text=""   ✗
+thinking disabled → stop=end_turn  blocks=["text"]               text="It is their…"  ✓
+deepseek-v4-pro   → stop=end_turn  blocks=["thinking","text"]    text="ice\nhabitat\nmelting" ✓
+```
+
+**提高额度并不解决问题**（思维链会把新额度同样吃光），`stop_reason` 恒为 `max_tokens`
+且**根本不产出 `text` 块**，于是解析出空串、静默失败。该现象与题目难度无关，只与
+模型是否输出思维链有关 —— 因此曾出现「同一段代码，有的题成功有的题失败」。
+
+**修正**：Anthropic 分支默认带 `thinking: {type:'disabled'}`；
+解析时若只有 `thinking` 块，主动 `log` 出 `stop_reason` 与块类型，不再静默返回 null。
+
+#### (c) 填空题的写入需要完整事件序列
+
+只做 `textContent` + `input` + `blur` 时，**DOM 有值但提交被前端硬门禁拦下**：
+
+```
+操作提示 请完成所有习题后再提交（已完成 0题，未完成 1 题）
+```
+
+读产物里填空题组件（`src-DZ23PK2` 的 `Ij()`）才看清它的契约 —— 组件在容器 `#do_{id}` 上绑定：
+
+| 事件 | 作用 |
+| --- | --- |
+| `input` → `O()` | 用 **`span.id`** 作 key 写入 `doRecord`，置 `changed = true` |
+| `focusout` → `M()` | 置 `focus = false`，若 `inner` 也 false 则 emit `doRecordChange` |
+| `mouseout` → `j()` | 置 `inner = false`，若 `focus` 也 false 则 emit `doRecordChange` |
+
+即必须让 `changed` / `focus` / `inner` **三个标志依次就位**才会真正提交作答；
+且监听的是 `focusout`（冒泡）而非 `blur`。另外 `O()` 开头就是 `if (!t?.id) return;`，
+所以 span 的 `id` 是必需的。
+
+**修正**：`fillEditable()` 补齐 `focusin → input → change → focusout → mouseout` 序列，
+并为 `FocusEvent` 不存在（离线测试的 mock DOM）的情况做降级。
+
+#### 验证结果
+
+填空题（5 个空，纯文字题干）一次通过：
+
+```json
+{ "answerCount": 1, "rightRate": 80,
+  "overWrite": "[{wild,status:1},{homes,status:3},{climate,status:1},
+                 {protect,status:1},{species,status:1}]" }
+```
+
+服务端**逐空**返回 `answerStatus`（1 = 对，3 = 错），比整题粒度更有用。
+
+#### (d) 拿分的完整闭环：试错 → 应答态 → 回填 → 覆盖
+
+在 (a)(b)(c) 都修好之后，才暴露出两个**只有跑通全链路才会显现**的缺陷。
+它们共同导致「服务端明明给了标准答案，脚本却拿不到分」：
+
+| 缺陷 | 现象 | 根因 |
+| --- | --- | --- |
+| **查看态下无法写入** | `写入 0 个空`，提交的仍是旧答案 | 已作答的题渲染成**查看态**：填空元素是 `zty-exercise-item-fill-blank-**done**`（done），不是 `-do`。查看态没有可写元素，必须先点 `Retry` 回到作答态 |
+| **填空载荷格式错误** | 答案值全对却 `rightRate: 0` | 站点线格式是 `[{idx, answer}]`（`idx` = 题干空位 span 的 `id`）。引擎自己拼的是裸值数组 `["surrogate","hyena",…]`，服务端整题判错 |
+
+**另外**：`deepseek-flash` 等推理模型的思维链长短直接影响是否产出正文，
+所以**超时不能按普通请求设**（原 25s 会在复杂题上误判超时，已提到 90s）。
+
+#### 最终闭环（v2.3.0）
+
+```
+取题(无答案) → AI 补答(可选) → 试错轮询至 errorNumShow 次
+             → 服务端下发 standardAnswer
+             → 点 Retry 回到作答态 → 按 [{idx,answer}] 回填
+             → 提交覆盖 → 满分
+```
+
+**实测结果**：同一道填空题，AI 首答 `rightRate: 0`（五个空全错），
+经上述闭环覆盖后 **`rightRate: 100`（五空全对）**。
+
+**已作答的节也会被修正**：若节内存在 `answerStatus !== 1` 且服务端已下发标准答案，
+脚本会重做覆盖，而不是直接翻页 —— 否则这一节的分数会永久停在错误值上。
+
+### 11.17 客观题与主观题必须分流：AI 只该处理后者 [实测]
+
+一度把 AI 用在所有题上，这是错的。两条路其实**互补**，混用只是浪费：
+
+| 题目性质 | 服务端行为 | 正确处理 |
+| --- | --- | --- |
+| **客观题**（`obSub: 'ob'`） | 答错累计到 `errorNumShow` 后**下发权威 `standardAnswer`** | **轮询**取答案后回填 |
+| **主观题**（`obSub: 'sub'`） | `answerStatus` 恒为 `-1`，**不下发答案**（返回 `"Answers will vary."` 或整句参考） | **AI** 作答（轮询对它无效） |
+
+**实测对比**（同一道 12 空的客观填空题）：
+
+| 路径 | 结果 | token |
+| --- | --- | --- |
+| AI 首答 | 部分正确甚至全错（另一道 5 空题 AI 全错） | 有 |
+| **轮询取答案** | **`rightRate: 100`，12 空全对** | **0** |
+
+即：**客观题用 AI 既不准又费钱**；轮询拿到的是服务端权威答案，天然优于模型猜测。
+而主观题服务端根本不给答案，**那才是 AI 唯一必要的场景**。
+
+**实现**：`isSubjective(q)` 依据 `obSub === 'sub'`（并兜底 `essay_*` 题型）分流 ——
+AI 只处理主观题，客观题全部交给 `retryUntilAnswer`。
+实测全客观的一节：**AI 请求数 = 0**，最终 `rightRate: 100`。
+
+**副产品**：`obSub` 就摆在题目对象里（与 `DEVELOPMENT §6.8` 记录一致），
+无需猜测题型的主观性。
+
+### 11.18 排查手段
+
+面板「结构自检」会打印路由解析、令牌状态、DOM 探针命中、题卡推断题型、按钮状态
+与取题接口返回的**字段名与长度**（不含内容）。
 
 ---
 
@@ -585,13 +1028,34 @@ fullscreenchange` **全部 0 命中**；全站无 `sendBeacon`、无自建埋点
 - 契约一致性自查：脚本内检索旧站残留标识（`tsenglish` / `sea-fetch-path` / `app-course-task-stu` /
   `.page-next` / `wy-btn` / `.courseList` / `.uniteTitle` / `tsinghuayingyu-front.currUser`）应为 0 命中
 
+### 12.1 登录态实测方法（v2.2.0 新增）
+
+静态逆向的弱点是：**它只能证明代码里写了什么，不能证明线上跑的是什么。**
+§11 的多处推翻正出自这一差距。因此 v2.2.0 补齐了实测环节：
+
+- **驱动方式**：Chrome 以独立 profile 启动并开 `--remote-debugging-port`，
+  通过裸 WebSocket CDP 客户端（`tsh-reverse/test/cdp.js`，零依赖）驱动真实登录态页面
+- **网络取证**：在文档加载前注入 `fetch` / `XHR` 拦截，捕获站点自身发出的请求与响应原文
+  —— 这是确定「接口到底返回了什么」的唯一可靠手段
+- **行为验证**：用 `Input.dispatchMouseEvent` 派发**真实鼠标事件**（`isTrusted=true`）
+  驱动作答与提交，而非页面内合成事件
+- **只读优先**：默认只做读取与探测；涉及写入（提交）的操作单独隔离，
+  且提交后立即回查接口，比对前后差异
+- **证据留档**：每步产物写入 `tsh-reverse/captcha/*.json`，便于复核
+
+原则与静态阶段一致，仅顺序调换：**运行时行为 > 线上产物 > 注释与文档**。
+
 ---
 
 ## 13. 版本历史
 
 | 版本 | 说明 |
 | --- | --- |
-| **2.0.0** | **新站重写**：适配 Vue3/Vite。API 域、鉴权、路由、接口、题型层、交互层全部重写；改为取题接口直取标准答案；新增结构自检；撤回 v1.1.3 停止维护决定 |
+| **2.3.0** | **策略感知版**。新增：客观题/主观题分流（客观题走轮询取权威答案、零 token；主观题用 AI，见 §11.17）、AI 请求格式自适应（Anthropic/OpenAI）、输出额度自适应（推理模型的思维链会吃掉额度）、填空题完整事件序列写入、查看态自动 Retry 回作答态、填空载荷按 [{idx,answer}] 构造、答错题自动重做覆盖（见 §11.15）。作答前先读 `learnMode` / `errorNumShow` 等判分口径（§11.12），据此分派：闯关模式自动试错取答案，自由模式不试错并明确停下。修复 `questionAnswerItemVOList` 未合并进 `questionVOList`（§11.13）导致的「已作答永远判为否」与由此产生的重复提交 |
+| **2.2.0** | **新站实测修正版**。以志愿者学生账号在登录态下完成端到端实测（§11）。修正：`content_type` 推断正则（原漏下划线 → 恒判为 1 → 接口 80020）；`SEL.paginationWrap` 改指真实存在的 `.preview-pagination`；选项容器以 `.ant-radio-wrapper` 优先；实现真正的 AI 补答（`aiAsk` 在 v2.0.0–v2.1.1 中定义了却从未被调用），并在无答案且未配 AI 时明确停止而非提交空答案。**另查明**：标准答案由服务端在答错累计 `errorNumShow` 次后下发到 `questionAnswerItemVOList[].answer`（§11.3），自由模式成绩记末次 |
+| 2.1.1 | 依 issue #2 实测反馈修复；引擎源码分离架构（`engines/`） |
+| 2.1.0 | 双引擎版：按路径分派新旧两套引擎，装一次通用 |
+| 2.0.0 | **新站重写**：适配 Vue3/Vite。API 域、鉴权、路由、接口、题型层、交互层全部重写；新增结构自检；撤回 v1.1.3 停止维护决定。**注：其「取题接口直取标准答案」的核心前提，已于 v2.2.0 被实测推翻** |
 | 1.1.3 | （未发布，已撤回）停止维护 |
 | 1.1.2 | 全新身份（改名/namespace/存储键/文件名）；知情同意书版本化；GUI 重写 |
 | 1.0.0 | 清理死代码、加载容错、翻页 URL 校验、弹窗白名单 |
